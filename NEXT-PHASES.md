@@ -24,10 +24,10 @@ Core of the ambitious plan is **largely complete**:
    - Easy to extend to OTLP (just change exporter).
    - See main.go and README. Resource includes service name.
 
-2. **Security Basics**
-   - mTLS example for gRPC + HTTP (Docker/K8s snippets).
-   - Simple auth middleware for admin endpoints (`/v1/admin/*`) and policies (API key or basic via env).
-   - Key namespace helper / sanitizer (e.g., enforce tenant: prefixes).
+2. **Security Basics** (partial ✅)
+   - Simple `ADMIN_TOKEN` env + `X-Admin-Token` header protection on `/v1/admin/*` (implemented).
+   - mTLS examples and key namespace helpers still recommended (see UseCase.md).
+   - Extendable via the new `adminAuth` wrapper.
    - Document in UseCase + README (fintech requires this).
    - Optional: rate-limit the rate-limiter itself on admin.
 

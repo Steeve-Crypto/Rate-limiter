@@ -426,22 +426,22 @@ func main() {
 		writeJSON(w, 200, map[string]string{"status": "restored", "src": src})
 	})
 
-	r.Get("/v1/admin/inspect", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/v1/admin/inspect", adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx, span := startSpan(r.Context(), "rate_limit.admin.inspect")
 		defer span.End()
 		k := r.URL.Query().Get("key")
 		span.SetAttributes(attribute.String("key", k))
 		st, _ := lim.Inspect(ctx, k)
 		writeJSON(w, 200, st)
-	})
-	r.Post("/v1/admin/reset", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	r.Post("/v1/admin/reset", adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx, span := startSpan(r.Context(), "rate_limit.admin.reset")
 		defer span.End()
 		k := r.URL.Query().Get("key")
 		span.SetAttributes(attribute.String("key", k))
 		lim.Reset(ctx, k)
 		writeJSON(w, 200, map[string]string{"reset":k})
-	})
+	}))
 
 	// Serve the React framework dashboard (preferred). Falls back to legacy HTML dashboard.
 	slog.Info("registering dashboard route")
@@ -668,4 +668,19 @@ func initTracer() *trace.TracerProvider {
 func startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, oteltrace.Span) {
 	tr := otel.Tracer("rate-limiter")
 	return tr.Start(ctx, name, oteltrace.WithAttributes(attrs...))
+}
+
+// adminAuth is a simple token guard for sensitive admin endpoints.
+// Set ADMIN_TOKEN env to enable (clients send X-Admin-Token header).
+// Part of next-phase security hardening.
+func adminAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if token := os.Getenv("ADMIN_TOKEN"); token != "" {
+			if r.Header.Get("X-Admin-Token") != token {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next(w, r)
+	}
 }
