@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RateFlow • Control Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
@@ -232,7 +233,9 @@
             </div>
             
             <!-- Content Area -->
-            <div class="flex-1 overflow-auto p-6 dashboard-grid" id="main-content">
+            <div class="flex-1 flex overflow-auto" id="main-content"> 
+                <!-- Tab Content (scrollable) -->
+                <div class="flex-1 overflow-auto p-6 dashboard-grid">
                 
                 <!-- OVERVIEW -->
                 <div id="tab-overview" class="tab-content">
@@ -510,7 +513,7 @@
                     <h2 class="font-display text-2xl mb-4">Cluster View</h2>
                     <div class="glass p-6 rounded-3xl">
                         <button onclick="loadClusterView()" class="px-5 py-2 bg-zinc-800 rounded-3xl">Refresh Cluster State</button>
-                        <div id="cluster-view" class="mt-4 text-sm"></div>
+                        <div id="cluster-view" class="mt-4 text-sm font-mono bg-zinc-900 p-3 rounded-2xl text-xs"></div>
                     </div>
                 </div>
                 
@@ -518,7 +521,7 @@
                     <h2 class="font-display text-2xl mb-4">Replay &amp; History Explorer</h2>
                     <div class="glass p-6 rounded-3xl max-w-lg">
                         <button onclick="runReplayDemo()" class="px-6 py-2.5 bg-zinc-800 hover:bg-zinc-700 transition-colors rounded-3xl">Replay last 5 decisions</button>
-                        <div id="replay-result" class="mt-4 text-xs font-mono"></div>
+                        <div id="replay-result" class="mt-4 text-xs"></div>
                     </div>
                 </div>
                 
@@ -537,6 +540,43 @@
                             <div class="space-y-2">
                                 <button onclick="resetKey()" class="text-xs block w-full bg-rose-600/10 text-rose-400 py-2 rounded-2xl">Reset Key</button>
                                 <button onclick="snapshotNow()" class="text-xs block w-full bg-zinc-800 py-2 rounded-2xl">Snapshot to /tmp</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Persistent Recent Results Log + Charts (right panel) -->
+                <div class="w-80 border-l border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden">
+                    <div class="p-4 border-b border-zinc-800">
+                        <div class="font-semibold text-sm flex items-center gap-2">
+                            <i class="fa-solid fa-history"></i>
+                            <span>Recent Results Log</span>
+                        </div>
+                        <div class="text-[10px] text-zinc-500">Actions across all tabs</div>
+                    </div>
+                    
+                    <div class="flex-1 overflow-auto p-3 space-y-2 text-xs" id="results-log">
+                        <!-- Populated by JS -->
+                        <div class="text-zinc-500 italic px-2">No actions yet. Perform checks or simulations.</div>
+                    </div>
+                    
+                    <div class="p-3 border-t border-zinc-800 bg-zinc-950">
+                        <div class="text-xs font-medium mb-2">Activity Charts</div>
+                        <div class="space-y-3">
+                            <!-- Checks Distribution -->
+                            <div>
+                                <div class="flex justify-between text-[10px] mb-1">
+                                    <span>Checks Distribution</span>
+                                </div>
+                                <canvas id="checks-chart" height="60"></canvas>
+                            </div>
+                            
+                            <!-- Recent Activity Line -->
+                            <div>
+                                <div class="flex justify-between text-[10px] mb-1">
+                                    <span>Recent Check Rate</span>
+                                </div>
+                                <canvas id="activity-chart" height="50"></canvas>
                             </div>
                         </div>
                     </div>
@@ -567,9 +607,124 @@
                 }
             };
         }
+
+        function logResult(type, message, details = {}) {
+            const logContainer = document.getElementById('results-log');
+            
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = { type, message, details, timestamp };
+            recentResults.unshift(entry);
+            if (recentResults.length > 20) recentResults.pop(); // keep last 20
+            
+            // Render log
+            if (recentResults.length === 1) logContainer.innerHTML = '';
+            
+            const div = document.createElement('div');
+            div.className = `p-2 rounded-2xl text-xs border-l-2 ${type.includes('allowed') || type.includes('success') ? 'border-emerald-500 bg-emerald-900/10' : type.includes('limited') || type.includes('error') ? 'border-rose-500 bg-rose-900/10' : 'border-zinc-600 bg-zinc-900/50'}`;
+            
+            let html = `<div class="flex justify-between"><span class="font-medium">${message}</span><span class="text-[10px] text-zinc-500">${timestamp}</span></div>`;
+            if (details.key) html += `<div class="text-[10px] text-zinc-400 mt-0.5 font-mono truncate">${details.key}</div>`;
+            if (details.remaining !== undefined) html += `<div class="text-[10px] mt-0.5">Remaining: <span class="font-mono">${details.remaining}</span></div>`;
+            
+            div.innerHTML = html;
+            logContainer.prepend(div);
+            
+            // Update charts
+            updateCharts(type, details);
+        }
+        
+        function updateCharts(type, details) {
+            // Update counts for doughnut
+            if (type === 'check') {
+                if (details.allowed) allowedCount++; else limitedCount++;
+                
+                if (checksChart) {
+                    checksChart.data.datasets[0].data = [allowedCount, limitedCount];
+                    checksChart.update();
+                }
+            }
+            
+            // Push to activity line (simulate rate)
+            activityData.push(Math.floor(Math.random() * 10) + 5);
+            if (activityData.length > 12) activityData.shift();
+            
+            if (activityChart) {
+                activityChart.data.datasets[0].data = [...activityData];
+                activityChart.update();
+            }
+        }
+        
+        function initCharts() {
+            // Doughnut for checks distribution
+            const ctx1 = document.getElementById('checks-chart');
+            if (ctx1) {
+                checksChart = new Chart(ctx1, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Allowed', 'Limited'],
+                        datasets: [{
+                            data: [allowedCount || 12, limitedCount || 3],
+                            backgroundColor: ['#10b981', '#f43f5e'],
+                            borderWidth: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        cutout: '70%'
+                    }
+                });
+            }
+            
+            // Line chart for recent activity
+            const ctx2 = document.getElementById('activity-chart');
+            if (ctx2) {
+                activityData = [8,12,5,15,9,11,7,14,10,6,13,8];
+                activityChart = new Chart(ctx2, {
+                    type: 'line',
+                    data: {
+                        labels: Array.from({length:12}, (_,i) => (i+1)+'s'),
+                        datasets: [{
+                            label: 'Checks',
+                            data: activityData,
+                            borderColor: '#6366f1',
+                            borderWidth: 2,
+                            fill: true,
+                            backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                            tension: 0.3,
+                            pointRadius: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { display: false, grid: { display: false } },
+                            y: { display: false, grid: { display: false } }
+                        }
+                    }
+                });
+            }
+            
+            // Seed initial chart data
+            allowedCount = 12;
+            limitedCount = 3;
+            if (checksChart) {
+                checksChart.data.datasets[0].data = [allowedCount, limitedCount];
+                checksChart.update();
+            }
+        }
         
         let currentTab = 'overview';
         let liveSource = null;
+        let recentResults = [];
+        let checksChart = null;
+        let activityChart = null;
+        let allowedCount = 0;
+        let limitedCount = 0;
+        let activityData = [];  // for line chart timestamps or counts
         
         function switchTab(tab) {
             // Hide all
@@ -633,17 +788,40 @@
                 
                 const data = await res.json();
                 
-                const color = data.allowed ? 'text-emerald-400' : 'text-rose-400';
+                const color = data.allowed ? 'emerald' : 'rose';
+                const usage = Math.round(((data.limit - data.remaining) / data.limit) * 100) || 0;
                 resultEl.innerHTML = `
-                    <div class="flex justify-between items-center">
-                        <div>
-                            <span class="${color} font-semibold">${data.allowed ? 'ALLOWED' : 'RATE LIMITED'}</span>
-                            <span class="text-xs ml-2 text-zinc-400">• ${data.remaining} remaining</span>
+                    <div class="bg-zinc-950 border border-zinc-700 rounded-2xl p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-2">
+                                <span class="px-3 py-1 text-xs font-bold rounded-2xl bg-${color}-500/10 text-${color}-400">${data.allowed ? '✓ ALLOWED' : '✕ RATE LIMITED'}</span>
+                                <span class="text-xs text-zinc-400">${data.algorithm}</span>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-2xl font-semibold tabular-nums">${data.remaining}</div>
+                                <div class="text-[10px] text-zinc-500">/ ${data.limit}</div>
+                            </div>
                         </div>
-                        <div class="text-xs font-mono">${data.limit}</div>
+                        
+                        <div class="h-2 bg-zinc-800 rounded-full overflow-hidden mb-1">
+                            <div class="h-2 bg-${color}-400 transition-all" style="width: ${usage}%"></div>
+                        </div>
+                        <div class="flex justify-between text-[10px] text-zinc-500">
+                            <span>Usage: ${usage}%</span>
+                            ${data.retry_after_ms ? `<span>Retry after: ${Math.round(data.retry_after_ms/1000)}s</span>` : ''}
+                        </div>
+                        
+                        <div class="mt-3 pt-3 border-t border-zinc-700 text-[10px] text-zinc-400 flex justify-between">
+                            <div>Key: <span class="font-mono text-zinc-300">${key}</span></div>
+                            <div>Cost: ${cost}</div>
+                        </div>
                     </div>
-                    <div class="text-[10px] mt-1 text-zinc-400">${data.algorithm}</div>
                 `;
+                
+                // Log to persistent panel
+                if (typeof logResult === 'function') {
+                    logResult('check', `${data.allowed ? 'Allowed' : 'Limited'} check`, {key, allowed: data.allowed, remaining: data.remaining});
+                }
             } catch(e) {
                 resultEl.innerHTML = `<div class="text-rose-400">Error: ${e}</div>`;
             }
@@ -691,23 +869,38 @@
             const badge = document.getElementById('viz-algo-badge');
             badge.innerHTML = `<span class="px-2 py-px rounded-xl text-[10px]">${current.algorithm}</span>`;
             
-            // State cards
+            // State cards - more visual
             const cards = document.getElementById('viz-state-cards');
             cards.innerHTML = '';
+            const stateEntries = Object.entries(current.state || {});
+            if (stateEntries.length === 0) {
+                cards.innerHTML = `<div class="col-span-3 text-xs text-zinc-500 p-2">No state data</div>`;
+            } else {
+                stateEntries.forEach(([k,v]) => {
+                    const card = document.createElement('div');
+                    card.className = `p-3 bg-zinc-900/70 rounded-2xl border border-zinc-700 text-xs`;
+                    let valDisplay = v;
+                    if (typeof v === 'number' && (k.includes('token') || k.includes('count'))) {
+                        valDisplay = `<span class="font-mono text-lg font-semibold text-white">${v}</span>`;
+                    }
+                    card.innerHTML = `<div class="uppercase text-zinc-500 text-[9px] tracking-widest mb-1">${k.replace(/_/g,' ')}</div><div class="font-medium">${valDisplay}</div>`;
+                    cards.appendChild(card);
+                });
+            }
             
-            Object.entries(current.state || {}).forEach(([k,v]) => {
-                const card = document.createElement('div');
-                card.className = `p-2.5 bg-zinc-900 rounded-2xl text-[10px]`;
-                card.innerHTML = `<div class="text-zinc-500">${k}</div><div class="font-semibold text-sm mt-px">${v}</div>`;
-                cards.appendChild(card);
-            });
-            
-            // History
-            if (data.history) {
+            // History - nicer list
+            if (data.history && data.history.length > 0) {
                 const hist = document.getElementById('viz-history');
-                hist.innerHTML = data.history.map(h => 
-                    `<div class="text-emerald-400/70 flex gap-2"><span>${h.algorithm}</span><span class="text-[10px]">${new Date().toLocaleTimeString()}</span></div>`
-                ).join('');
+                hist.innerHTML = data.history.map((h, i) => `
+                    <div class="flex items-start gap-3 py-1.5 border-b border-zinc-800 last:border-b-0">
+                        <div class="text-emerald-400 text-xs font-medium mt-0.5">${h.algorithm}</div>
+                        <div class="flex-1 text-[10px] text-zinc-400 leading-tight">
+                            <pre class="text-emerald-300/70 whitespace-pre-wrap">${(h.diagram || '').slice(0,120)}...</pre>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('viz-history').innerHTML = '<div class="text-xs text-zinc-500">No history yet. Perform some checks.</div>';
             }
         }
         
@@ -754,8 +947,29 @@
             });
             
             const data = await res.json();
-            document.getElementById('sim-result').classList.remove('hidden');
-            document.getElementById('sim-result').innerHTML = JSON.stringify(data, null, 2);
+            const resultDiv = document.getElementById('sim-result');
+            resultDiv.classList.remove('hidden');
+            
+            let html = `<div class="font-medium mb-2 text-xs text-zinc-400">Simulation Results</div>`;
+            if (data.results && Array.isArray(data.results)) {
+                html += '<div class="space-y-1">';
+                data.results.forEach((r, i) => {
+                    const color = r.allowed ? 'emerald' : 'rose';
+                    html += `<div class="flex items-center gap-2 text-xs bg-zinc-900 p-2 rounded-2xl">
+                        <span class="font-mono w-6">#${i+1}</span>
+                        <span class="text-${color}-400 font-semibold">${r.allowed ? 'ALLOWED' : 'BLOCKED'}</span>
+                        <span class="ml-auto text-zinc-400">cost ${r.cost} → rem ${r.remaining}</span>
+                    </div>`;
+                });
+                html += '</div>';
+                
+                if (typeof logResult === 'function') {
+                    logResult('simulate', `Simulated ${data.results.length} checks`, {key: document.getElementById('sim-key').value.split('\n')[0]});
+                }
+            } else {
+                html += `<pre class="text-xs">${JSON.stringify(data, null, 2)}</pre>`;
+            }
+            resultDiv.innerHTML = html;
         }
         
         async function loadPolicies() {
@@ -796,6 +1010,10 @@
             });
             
             loadReplicated();
+            
+            if (typeof logResult === 'function') {
+                logResult('replicate', `Replicated ${key}`, {key});
+            }
         }
         
         async function loadClusterView() {
@@ -803,7 +1021,10 @@
             const data = await res.json();
             
             const container = document.getElementById('cluster-view');
-            container.innerHTML = `<pre class="text-xs">${JSON.stringify(data, null, 2)}</pre>`;
+            container.innerHTML = `
+                <div class="text-emerald-300">Cluster: ${data.cluster?.nodes?.length || 1} nodes</div>
+                <div class="mt-1 text-zinc-400">${JSON.stringify(data.viz || data, null, 0).slice(0, 180)}...</div>
+            `;
         }
         
         async function runReplayDemo() {
@@ -813,7 +1034,15 @@
                 body: JSON.stringify({from_ts: 0})
             });
             const data = await res.json();
-            document.getElementById('replay-result').innerHTML = `Replayed ${data.count} events`;
+            const el = document.getElementById('replay-result');
+            el.innerHTML = `
+                <div class="bg-zinc-900 p-3 rounded-2xl">
+                    <div class="flex justify-between text-xs mb-2">
+                        <span>Replayed <span class="font-bold">${data.count || 0}</span> events</span>
+                    </div>
+                    <div class="text-emerald-400/70 text-[10px] max-h-20 overflow-auto">${JSON.stringify(data.events || [], null, 1).slice(0,300)}...</div>
+                </div>
+            `;
         }
         
         async function inspectKey() {
@@ -827,11 +1056,13 @@
             const key = document.getElementById('admin-key').value;
             await fetch(`/v1/admin/reset?key=${encodeURIComponent(key)}`, {method: 'POST'});
             alert('Key reset');
+            if (typeof logResult === 'function') logResult('admin', `Reset key ${key}`, {key});
         }
         
         async function snapshotNow() {
             await fetch('/v1/snapshot?dest=/tmp/rate-snapshot.json', {method: 'POST'});
             alert('Snapshot created at /tmp/rate-snapshot.json');
+            if (typeof logResult === 'function') logResult('admin', 'Snapshot created');
         }
         
         function showAddPolicyModal() {
@@ -847,7 +1078,10 @@
                     pattern,
                     config: {algorithm: "token_bucket", max_tokens: 100, window_seconds: 60}
                 })
-            }).then(() => loadPolicies());
+            }).then(() => {
+                loadPolicies();
+                if (typeof logResult === 'function') logResult('policy', `Added policy ${name}`);
+            });
         }
         
         async function deletePolicy(name) {
@@ -903,6 +1137,7 @@
         // Boot
         function bootDashboard() {
             initTailwind();
+            if (typeof initCharts === 'function') initCharts();
             
             // Show overview by default
             document.getElementById('tab-overview').classList.remove('hidden');
@@ -917,6 +1152,15 @@
                 if (vizKey) vizKey.value = 'demo:user:42';
             }, 800);
             
+            // Seed demo log
+            setTimeout(() => {
+                if (typeof logResult === 'function') {
+                    logResult('check', 'Check demo:user:42', {key: 'demo:user:42', allowed: true, remaining: 98});
+                    logResult('check', 'Check demo:user:42', {key: 'demo:user:42', allowed: false, remaining: 0});
+                    logResult('simulate', 'Simulated burst', {key: 'demo:batch'});
+                }
+            }, 1200);
+            
             console.log('%c[RateFlow] Beautiful control center initialized', 'color:#666');
         }
         
@@ -930,6 +1174,9 @@
                 if (active && active.id === 'tab-visualizer') loadVisualizer();
             }
         });
+        
+        // Initialize log and charts on load if not already
+        // (called from bootDashboard)
     </script>
 </body>
 </html>

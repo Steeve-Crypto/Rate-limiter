@@ -177,6 +177,37 @@ func main() {
 		mt:=uint32(100); if v,_:=strconv.ParseUint(r.URL.Query().Get("max_tokens"),10,32);v>0{mt=uint32(v)}
 		ws:=uint32(60); if v,_:=strconv.ParseUint(r.URL.Query().Get("window_seconds"),10,32);v>0{ws=uint32(v)}
 		viz, _ := lim.Visualize(r.Context(), k, a, mt, ws)
+		if r.URL.Query().Get("format") == "html" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			historyHTML := ""
+			if r.URL.Query().Get("include_history") == "true" {
+				h, _ := lim.History(r.Context(), k, a, mt, ws, 5)
+				for _, item := range h {
+					historyHTML += fmt.Sprintf(`<div class="mb-2 p-2 bg-zinc-900 rounded text-xs"><strong>%s</strong><br><pre class="text-[10px] mt-1">%s</pre></div>`, item.Algorithm, item.Diagram)
+				}
+			}
+			fmt.Fprintf(w, `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Visualize • %s</title><script src="https://cdn.tailwindcss.com"></script></head>
+<body class="bg-zinc-950 text-zinc-200 p-6 font-sans">
+<div class="max-w-4xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <div><h1 class="text-2xl font-semibold tracking-tight">RateFlow Visualize</h1><p class="text-zinc-400 text-sm">%s</p></div>
+    <a href="/dashboard" class="text-xs px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded-2xl">Open Full Dashboard →</a>
+  </div>
+  <div class="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 mb-6">
+    <div class="flex items-center gap-3 mb-4">
+      <span class="px-3 py-1 text-xs bg-indigo-600/20 text-indigo-400 rounded-2xl">%s</span>
+      <span class="text-sm text-zinc-400">Live snapshot</span>
+    </div>
+    <pre class="text-emerald-400 text-sm leading-tight whitespace-pre overflow-auto p-4 bg-black/60 rounded-2xl">%s</pre>
+  </div>
+  %s
+  <div class="text-xs text-zinc-500">Powered by RateFlow • <a href="/v1/visualize?key=%s&algorithm=%s&max_tokens=%d&window_seconds=%d" class="underline">JSON</a></div>
+</div>
+<script>tailwind.config = {theme:{extend:{}}}</script>
+</body></html>`, k, k, a, viz.Diagram, historyHTML, k, a, mt, ws)
+			return
+		}
 		if r.URL.Query().Get("include_history")=="true" {
 			h,_ := lim.History(r.Context(), k, a, mt, ws, 5)
 			writeJSON(w,200,map[string]any{"current":viz,"history":h})
