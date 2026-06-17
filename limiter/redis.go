@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -195,9 +196,17 @@ func (r *RedisLimiter) Visualize(ctx context.Context, key string, algo Algorithm
 
 	switch algo {
 	case TokenBucket:
-		return r.visualizeTokenBucket(ctx, key, maxTokens, windowSeconds)
+		viz, err := r.visualizeTokenBucket(ctx, key, maxTokens, windowSeconds)
+		if err == nil {
+			r.recordHistory(ctx, key, viz)
+		}
+		return viz, err
 	case SlidingWindow:
-		return r.visualizeSlidingWindow(ctx, key, maxTokens, windowSeconds)
+		viz, err := r.visualizeSlidingWindow(ctx, key, maxTokens, windowSeconds)
+		if err == nil {
+			r.recordHistory(ctx, key, viz)
+		}
+		return viz, err
 	default:
 		return nil, fmt.Errorf("unknown algorithm: %s", algo)
 	}
@@ -345,3 +354,43 @@ func (r *RedisLimiter) Inspect(ctx context.Context, key string) (map[string]any,
 
 	return result, nil
 }
+
+// recordHistory pushes a viz snapshot to Redis history ZSET for the key.
+func (r *RedisLimiter) recordHistory(ctx context.Context, key string, viz *Visualization) {
+	if viz == nil {
+		return
+	}
+	histKey := fmt.Sprintf("rl:hist:%s", key)
+	// store as JSON score by ts
+	data, _ := json.Marshal(viz) // ignore error for simplicity
+	score := float64(nowUnixMilli())
+	r.client.ZAdd(ctx, histKey, &redis.Z{Score: score, Member: string(data)}).Result()
+	// trim to last 50
+	r.client.ZRemRangeByRank(ctx, histKey, 0, -51)
+}
+
+// History fetches recent history from Redis ZSET.
+func (r *RedisLimiter) History(ctx context.Context, key string, algo Algorithm, maxTokens, windowSeconds uint32, limit int) ([]*Visualization, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	histKey := fmt.Sprintf("rl:hist:%s", key)
+	// get latest
+	members, err := r.client.ZRevRange(ctx, histKey, 0, int64(limit-1)).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*Visualization, 0, len(members))
+	for _, m := range members {
+		var v Visualization
+		if json.Unmarshal([]byte(m), &v) == nil {
+			out = append(out, &v)
+		}
+	}
+	// reverse to chronological
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+

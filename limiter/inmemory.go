@@ -20,6 +20,11 @@ type InMemoryLimiter struct {
 	// sliding window: store recent event times (unix milli) per key.
 	// We keep them sorted for easy window trimming.
 	sw map[string][]int64
+
+	// history: lightweight recent visualizations per key (Phase 2)
+	// bounded ring to avoid unbounded growth
+	history     map[string][]*Visualization
+	historySize int
 }
 
 type tbState struct {
@@ -29,8 +34,10 @@ type tbState struct {
 
 func NewInMemoryLimiter() *InMemoryLimiter {
 	return &InMemoryLimiter{
-		tb: make(map[string]*tbState),
-		sw: make(map[string][]int64),
+		tb:          make(map[string]*tbState),
+		sw:          make(map[string][]int64),
+		history:     make(map[string][]*Visualization),
+		historySize: 50, // keep last N visualizations
 	}
 }
 
@@ -187,9 +194,13 @@ func (m *InMemoryLimiter) Visualize(ctx context.Context, key string, algo Algori
 
 	switch algo {
 	case TokenBucket:
-		return m.visualizeTokenBucket(key, maxTokens, windowSeconds), nil
+		viz := m.visualizeTokenBucket(key, maxTokens, windowSeconds)
+		m.recordHistory(key, viz)
+		return viz, nil
 	case SlidingWindow:
-		return m.visualizeSlidingWindow(key, maxTokens, windowSeconds), nil
+		viz := m.visualizeSlidingWindow(key, maxTokens, windowSeconds)
+		m.recordHistory(key, viz)
+		return viz, nil
 	default:
 		return nil, fmt.Errorf("unknown algorithm: %s", algo)
 	}
@@ -299,7 +310,20 @@ func (m *InMemoryLimiter) Reset(ctx context.Context, key string) error {
 	defer m.mu.Unlock()
 	delete(m.tb, key)
 	delete(m.sw, key)
+	delete(m.history, key)
 	return nil
+}
+
+func (m *InMemoryLimiter) recordHistory(key string, viz *Visualization) {
+	if viz == nil {
+		return
+	}
+	h := m.history[key]
+	h = append(h, viz)
+	if len(h) > m.historySize {
+		h = h[len(h)-m.historySize:]
+	}
+	m.history[key] = h
 }
 
 // Inspect returns raw internal state for debugging.
@@ -326,6 +350,29 @@ func (m *InMemoryLimiter) Inspect(ctx context.Context, key string) (map[string]a
 	}
 
 	return result, nil
+}
+
+// History returns recent visualization snapshots.
+func (m *InMemoryLimiter) History(ctx context.Context, key string, algo Algorithm, maxTokens, windowSeconds uint32, limit int) ([]*Visualization, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 20
+	}
+
+	h := m.history[key]
+	if len(h) == 0 {
+		return []*Visualization{}, nil
+	}
+	start := 0
+	if len(h) > limit {
+		start = len(h) - limit
+	}
+	// return copies to avoid mutation
+	out := make([]*Visualization, len(h)-start)
+	copy(out, h[start:])
+	return out, nil
 }
 
 func minFloat(a, b float64) float64 {

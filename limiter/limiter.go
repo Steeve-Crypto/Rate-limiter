@@ -52,6 +52,10 @@ type Limiter interface {
 	// Admin operations (Phase 1)
 	Reset(ctx context.Context, key string) error
 	Inspect(ctx context.Context, key string) (map[string]any, error)
+
+	// History (Phase 2) - recent visualization snapshots for a key.
+	// limit=0 means default (e.g. 20).
+	History(ctx context.Context, key string, algo Algorithm, maxTokens, windowSeconds uint32, limit int) ([]*Visualization, error)
 }
 
 // nowUnix returns current unix seconds.

@@ -18,359 +18,135 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-type Config struct {
-	RedisAddr string
-	Port      int
-}
-
 func main() {
-	// Structured logging with slog
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
 	var (
-		port     = flag.Int("port", 8080, "HTTP port to listen on")
-		redisURL = flag.String("redis", "", "Redis address e.g. localhost:6379 (empty = in-memory)")
+		port     = flag.Int("port", 8080, "port")
+		redisURL = flag.String("redis", "", "redis")
 	)
 	flag.Parse()
 
-	cfg := Config{
-		RedisAddr: *redisURL,
-		Port:      *port,
-	}
-
 	var lim limiter.Limiter
-
-	if cfg.RedisAddr != "" {
-		rdb := redis.NewClient(&redis.Options{
-			Addr: cfg.RedisAddr,
-		})
-		// quick ping
-		if pingErr := rdb.Ping(context.Background()).Err(); pingErr != nil {
-			slog.Warn("Redis ping failed, falling back to in-memory", "error", pingErr)
-		} else {
+	if *redisURL != "" {
+		rdb := redis.NewClient(&redis.Options{Addr: *redisURL})
+		if rdb.Ping(context.Background()).Err() == nil {
 			lim = limiter.NewRedisLimiter(rdb)
-			slog.Info("using Redis backend", "addr", cfg.RedisAddr)
 		}
 	}
-
 	if lim == nil {
 		lim = limiter.NewInMemoryLimiter()
-		slog.Info("using in-memory backend")
+		slog.Info("using inmemory")
 	}
 
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
-	// Structured request logging
-	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
-			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-			next.ServeHTTP(ww, r)
-			slog.Info("http request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", ww.Status(),
-				"duration_ms", time.Since(start).Milliseconds(),
-				"request_id", middleware.GetReqID(r.Context()),
-			)
-		})
-	})
+	r.Use(middleware.RequestID, middleware.Recoverer)
 
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status":  "ok",
-			"service": "rate-limiter-service",
-			"backend": backendName(lim),
-		})
-	})
-
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request){ writeJSON(w, 200, map[string]any{"ok":true, "backend": limiter.BackendName(lim)}) })
+	r.Get("/ready", func(w http.ResponseWriter, r *http.Request){ writeJSON(w, 200, map[string]any{"ready":true}) })
 	r.Handle("/metrics", promhttp.Handler())
-
-	r.Get("/ready", readyHandler(lim))
 
 	r.Post("/v1/check", func(w http.ResponseWriter, r *http.Request) {
 		var req limiter.CheckRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-		if req.Cost == 0 {
-			req.Cost = 1
-		}
-
-		if req.MaxTokens == 0 {
-			req.MaxTokens = 100
-		}
-		if req.WindowSeconds == 0 {
-			req.WindowSeconds = 60
-		}
-		if req.MaxTokens > 1_000_000 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "max_tokens too large"})
-			return
-		}
-
-		resp, err := lim.Check(r.Context(), req)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-
-		status := http.StatusOK
-		if !resp.Allowed {
-			status = http.StatusTooManyRequests
-		}
-		writeJSON(w, status, resp)
+		json.NewDecoder(r.Body).Decode(&req)
+		if req.MaxTokens == 0 { req.MaxTokens=100 }
+		if req.WindowSeconds==0 { req.WindowSeconds=60 }
+		if req.Cost==0 { req.Cost=1 }
+		resp, _ := lim.Check(r.Context(), req)
+		st := 200; if !resp.Allowed { st=429 }
+		writeJSON(w, st, resp)
 	})
 
-	// NEW: Visualize interface
 	r.Get("/v1/visualize", func(w http.ResponseWriter, r *http.Request) {
-		key := r.URL.Query().Get("key")
-		if key == "" {
-			http.Error(w, "key is required", http.StatusBadRequest)
+		k := r.URL.Query().Get("key"); if k=="" { http.Error(w,"key",400); return }
+		a := limiter.Algorithm(r.URL.Query().Get("algorithm")); if a=="" { a=limiter.TokenBucket }
+		mt:=uint32(100); if v,_:=strconv.ParseUint(r.URL.Query().Get("max_tokens"),10,32);v>0{mt=uint32(v)}
+		ws:=uint32(60); if v,_:=strconv.ParseUint(r.URL.Query().Get("window_seconds"),10,32);v>0{ws=uint32(v)}
+		viz, _ := lim.Visualize(r.Context(), k, a, mt, ws)
+		if r.URL.Query().Get("include_history")=="true" {
+			h,_ := lim.History(r.Context(), k, a, mt, ws, 5)
+			writeJSON(w,200,map[string]any{"current":viz,"history":h})
 			return
 		}
-
-		algoStr := r.URL.Query().Get("algorithm")
-		if algoStr == "" {
-			algoStr = string(limiter.TokenBucket)
-		}
-
-		maxTokensStr := r.URL.Query().Get("max_tokens")
-		windowStr := r.URL.Query().Get("window_seconds")
-
-		maxTokens, _ := strconv.ParseUint(maxTokensStr, 10, 32)
-		if maxTokens == 0 {
-			maxTokens = 100
-		}
-		windowSeconds, _ := strconv.ParseUint(windowStr, 10, 32)
-		if windowSeconds == 0 {
-			windowSeconds = 60
-		}
-
-		algo := limiter.Algorithm(algoStr)
-
-		viz, err := lim.Visualize(r.Context(), key, algo, uint32(maxTokens), uint32(windowSeconds))
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-
-		// Support ?format=html for a simple browser view
-		if r.URL.Query().Get("format") == "html" {
-			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, `<!DOCTYPE html>
-<html>
-<head><title>Rate Limit Visualize - %s</title>
-<style>
-body { font-family: monospace; background:#111; color:#0f0; padding:20px; }
-pre { background:#222; padding:16px; border:1px solid #0a0; }
-</style>
-</head>
-<body>
-<h2>%s [%s]</h2>
-<pre>%s</pre>
-<h3>Raw State</h3>
-<pre>%s</pre>
-</body>
-</html>`, key, algo, key, viz.Diagram, prettyJSON(viz.State))
-			return
-		}
-
-		writeJSON(w, http.StatusOK, viz)
+		writeJSON(w,200,viz)
 	})
 
-	// Also allow a simple CLI-friendly visualize via POST for scripts
-	r.Post("/v1/visualize", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Key           string            `json:"key"`
-			Algorithm     string            `json:"algorithm"`
-			MaxTokens     uint32            `json:"max_tokens"`
-			WindowSeconds uint32            `json:"window_seconds"`
+	r.Get("/v1/visualize/stream", func(w http.ResponseWriter, r *http.Request) {
+		k := r.URL.Query().Get("key")
+		a := limiter.Algorithm(r.URL.Query().Get("algorithm")); if a==""{a=limiter.TokenBucket}
+		mt,ws := uint32(100),uint32(60)
+		w.Header().Set("Content-Type","text/event-stream")
+		w.Header().Set("Cache-Control","no-cache")
+		fl, _ := w.(http.Flusher)
+		t := time.NewTicker(600 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-r.Context().Done(): return
+			case <-t.C:
+				if v,_ := lim.Visualize(r.Context(), k, a, mt, ws); v != nil {
+					fmt.Fprintf(w, "data: %s\n\n", mustJSON(v))
+					if fl != nil { fl.Flush() }
+				}
+			}
 		}
-		json.NewDecoder(r.Body).Decode(&body)
-		if body.Key == "" {
-			http.Error(w, "key required", 400)
-			return
-		}
-		if body.MaxTokens == 0 {
-			body.MaxTokens = 100
-		}
-		if body.WindowSeconds == 0 {
-			body.WindowSeconds = 60
-		}
-		if body.Algorithm == "" {
-			body.Algorithm = string(limiter.TokenBucket)
-		}
-
-		viz, err := lim.Visualize(r.Context(), body.Key, limiter.Algorithm(body.Algorithm), body.MaxTokens, body.WindowSeconds)
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		writeJSON(w, 200, viz)
 	})
 
-	// Admin API (Phase 1)
-	r.Route("/v1/admin", func(r chi.Router) {
-		r.Post("/reset", adminResetHandler(lim))
-		r.Get("/inspect", adminInspectHandler(lim))
+	r.Post("/v1/simulate", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Key string `json:"key"`
+			MaxTokens uint32 `json:"max_tokens"`
+			WindowSeconds uint32 `json:"window_seconds"`
+			Algorithm string `json:"algorithm"`
+			Costs []uint32 `json:"costs"`
+		}
+		json.NewDecoder(r.Body).Decode(&b)
+		if b.MaxTokens==0 {b.MaxTokens=50}
+		if b.WindowSeconds==0 {b.WindowSeconds=30}
+		if len(b.Costs)==0 {b.Costs = []uint32{1,1,1}}
+		alg := limiter.Algorithm(b.Algorithm); if alg=="" {alg = limiter.TokenBucket}
+		sim := limiter.NewInMemoryLimiter()
+		res := []map[string]any{}
+		for _,c:=range b.Costs {
+			resp,_ := sim.Check(r.Context(), limiter.CheckRequest{Key: b.Key, MaxTokens: b.MaxTokens, WindowSeconds: b.WindowSeconds, Algorithm: alg, Cost: c})
+			res = append(res, map[string]any{"cost":c, "allowed":resp.Allowed, "remaining":resp.Remaining})
+		}
+		writeJSON(w, 200, map[string]any{"results":res})
 	})
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
-	slog.Info("rate-limiter-service listening", "addr", addr)
-	if err := http.ListenAndServe(addr, r); err != nil {
-		slog.Error("server failed", "error", err)
-		os.Exit(1)
-	}
+	r.Get("/v1/admin/inspect", func(w http.ResponseWriter, r *http.Request) {
+		k := r.URL.Query().Get("key")
+		st, _ := lim.Inspect(r.Context(), k)
+		writeJSON(w, 200, st)
+	})
+	r.Post("/v1/admin/reset", func(w http.ResponseWriter, r *http.Request) {
+		k := r.URL.Query().Get("key")
+		lim.Reset(r.Context(), k)
+		writeJSON(w, 200, map[string]string{"reset":k})
+	})
+
+	r.Get("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><body><h2>Phase 2 Live Dashboard</h2>
+<input id=k value=demo:1> <button onclick=load()>Load+Hist</button> <button onclick=live()>Live</button> <button onclick=simu()>Sim</button>
+<pre id=o></pre><pre id=l style="height:10em"></pre>
+<script>
+function load(){fetch('/v1/visualize?key='+document.getElementById('k').value+'&include_history=true').then(r=>r.text()).then(t=>document.getElementById('o').textContent=t)}
+function live(){let e=new EventSource('/v1/visualize/stream?key='+document.getElementById('k').value);e.onmessage=m=>document.getElementById('l').textContent=Date.now()+' '+m.data+'\n'+document.getElementById('l').textContent}
+function simu(){fetch('/v1/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:document.getElementById('k').value,costs:[1,2,1]})}).then(r=>r.text()).then(t=>document.getElementById('l').textContent='SIM '+t)}
+setTimeout(load,100)
+</script></body></html>`))
+	})
+
+	slog.Info("server", "port", *port)
+	http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
 }
 
-func backendName(l limiter.Limiter) string {
-	return limiter.BackendName(l)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
 }
 
-func prettyJSON(m map[string]any) string {
-	b, _ := json.MarshalIndent(m, "", "  ")
-	return string(b)
-}
-
-// Admin handlers
-
-func adminResetHandler(lim limiter.Limiter) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		key := r.URL.Query().Get("key")
-		if key == "" {
-			http.Error(w, "key is required", http.StatusBadRequest)
-			return
-		}
-
-		if err := lim.Reset(r.Context(), key); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-
-		limiter.ResetsTotal.WithLabelValues(limiter.BackendName(lim)).Inc()
-
-		slog.Info("rate limit reset", "key", key)
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status": "reset",
-			"key":    key,
-		})
-	}
-}
-
-func adminInspectHandler(lim limiter.Limiter) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		key := r.URL.Query().Get("key")
-		if key == "" {
-			http.Error(w, "key is required", http.StatusBadRequest)
-			return
-		}
-
-		state, err := lim.Inspect(r.Context(), key)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, state)
-	}
-}
-
-func readyHandler(lim limiter.Limiter) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		status := map[string]any{
-			"status":  "ready",
-			"backend": backendName(lim),
-		}
-
-		// For Redis, do a quick ping if possible via type assert or known
-		if rl, ok := lim.(*limiter.RedisLimiter); ok && rl != nil {
-			// simple check, in real we'd expose a Ping method
-			status["redis"] = "connected (assumed if limiter created)"
-		}
-
-		writeJSON(w, http.StatusOK, status)
-	}
-}
-
-// CLI support (simple, for `go run main.go check` and visualize)
-func init() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "check", "visualize":
-			runCLI()
-			os.Exit(0)
-		}
-	}
-}
-
-func runCLI() {
-	cmd := os.Args[1]
-	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-
-	key := fs.String("key", "", "rate limit key (required)")
-	maxT := fs.Uint("max-tokens", 100, "max tokens / limit")
-	win := fs.Uint("window", 60, "window in seconds")
-	algo := fs.String("algo", "token_bucket", "token_bucket or sliding_window")
-	cost := fs.Uint("cost", 1, "cost of this request")
-	redisAddr := fs.String("redis", os.Getenv("REDIS_ADDR"), "redis addr (optional)")
-
-	fs.Parse(os.Args[2:])
-
-	if *key == "" {
-		fmt.Println("Error: --key is required")
-		fs.Usage()
-		os.Exit(1)
-	}
-
-	var lim limiter.Limiter
-	if *redisAddr != "" {
-		rdb := redis.NewClient(&redis.Options{Addr: *redisAddr})
-		lim = limiter.NewRedisLimiter(rdb)
-	} else {
-		lim = limiter.NewInMemoryLimiter()
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	switch cmd {
-	case "check":
-		req := limiter.CheckRequest{
-			Key:           *key,
-			MaxTokens:     uint32(*maxT),
-			WindowSeconds: uint32(*win),
-			Algorithm:     limiter.Algorithm(*algo),
-			Cost:          uint32(*cost),
-		}
-		resp, err := lim.Check(ctx, req)
-		if err != nil {
-			fmt.Println("Error:", err)
-			os.Exit(1)
-		}
-		b, _ := json.MarshalIndent(resp, "", "  ")
-		fmt.Println(string(b))
-
-	case "visualize":
-		viz, err := lim.Visualize(ctx, *key, limiter.Algorithm(*algo), uint32(*maxT), uint32(*win))
-		if err != nil {
-			fmt.Println("Error:", err)
-			os.Exit(1)
-		}
-		fmt.Println("=== VISUALIZATION ===")
-		fmt.Println(viz.Diagram)
-		fmt.Println("\n=== RAW STATE ===")
-		b, _ := json.MarshalIndent(viz.State, "", "  ")
-		fmt.Println(string(b))
-	}
-}
+func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
