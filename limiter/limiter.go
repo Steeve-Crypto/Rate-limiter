@@ -59,6 +59,12 @@ type Limiter interface {
 	// History (Phase 2) - recent visualization snapshots for a key.
 	// limit=0 means default (e.g. 20).
 	History(ctx context.Context, key string, algo Algorithm, maxTokens, windowSeconds uint32, limit int) ([]*Visualization, error)
+
+	// Phase 4: Persistent + Replayable State
+	Snapshot(ctx context.Context, dest string) error // dest can be file path or "redis"
+	Restore(ctx context.Context, src string) error
+	LogDecision(ctx context.Context, ev DecisionEvent) error
+	Replay(ctx context.Context, fromTs, toTs int64) ([]DecisionEvent, error)
 }
 
 // nowUnix returns current unix seconds.
@@ -69,6 +75,26 @@ func nowUnix() int64 {
 // nowUnixMilli returns current unix milliseconds.
 func nowUnixMilli() int64 {
 	return time.Now().UnixMilli()
+}
+
+// DecisionEvent for event log and replay (Phase 4)
+type DecisionEvent struct {
+	Timestamp int64     `json:"ts"`
+	Key       string    `json:"key"`
+	Algorithm Algorithm `json:"algo"`
+	Allowed   bool      `json:"allowed"`
+	Remaining uint32    `json:"remaining"`
+	Limit     uint32    `json:"limit"`
+	Cost      uint32    `json:"cost"`
+	Labels    map[string]string `json:"labels,omitempty"`
+}
+
+// StateStore abstracts persistence for snapshots and event logs (Phase 4).
+type StateStore interface {
+	SaveSnapshot(ctx context.Context, data []byte) error
+	LoadSnapshot(ctx context.Context) ([]byte, error)
+	AppendEvent(ctx context.Context, ev DecisionEvent) error
+	QueryEvents(ctx context.Context, from, to int64) ([]DecisionEvent, error)
 }
 
 // LimitConfig holds resolved rate limit parameters from policy.

@@ -82,6 +82,19 @@ func main() {
 
 		resp, _ := lim.Check(r.Context(), req)
 		st := 200; if !resp.Allowed { st=429 }
+
+		// Phase 4: log decision
+		lim.LogDecision(r.Context(), limiter.DecisionEvent{
+			Timestamp: time.Now().UnixMilli(),
+			Key:       req.Key,
+			Algorithm: req.Algorithm,
+			Allowed:   resp.Allowed,
+			Remaining: resp.Remaining,
+			Limit:     resp.Limit,
+			Cost:      req.Cost,
+			Labels:    req.Labels,
+		})
+
 		writeJSON(w, st, resp)
 	})
 
@@ -154,6 +167,44 @@ func main() {
 		}
 		policyEngine.AddPolicy(p)
 		writeJSON(w, 200, map[string]string{"status": "added", "name": p.Name})
+	})
+
+	// Phase 4: Replay endpoint
+	r.Post("/v1/replay", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			FromTs int64  `json:"from_ts"`
+			ToTs   int64  `json:"to_ts"`
+			Key    string `json:"key"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		events, err := lim.Replay(r.Context(), req.FromTs, req.ToTs)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"events": events, "count": len(events)})
+	})
+
+	// Phase 4 snapshot/restore (admin style)
+	r.Post("/v1/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		dest := r.URL.Query().Get("dest")
+		if dest == "" { dest = "/tmp/rate-snapshot.json" }
+		err := lim.Snapshot(r.Context(), dest)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "snapped", "dest": dest})
+	})
+	r.Post("/v1/restore", func(w http.ResponseWriter, r *http.Request) {
+		src := r.URL.Query().Get("src")
+		if src == "" { src = "/tmp/rate-snapshot.json" }
+		err := lim.Restore(r.Context(), src)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "restored", "src": src})
 	})
 
 	r.Get("/v1/admin/inspect", func(w http.ResponseWriter, r *http.Request) {

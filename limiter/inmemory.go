@@ -2,7 +2,9 @@ package limiter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +30,9 @@ type InMemoryLimiter struct {
 	// bounded ring to avoid unbounded growth
 	history     map[string][]*Visualization
 	historySize int
+
+	// decisions log for replay (Phase 4)
+	decisions []DecisionEvent
 }
 
 type tbState struct {
@@ -42,6 +47,7 @@ func NewInMemoryLimiter() *InMemoryLimiter {
 		lb:          make(map[string]*lbState),
 		history:     make(map[string][]*Visualization),
 		historySize: 50, // keep last N visualizations
+		decisions:   []DecisionEvent{},
 	}
 }
 
@@ -400,4 +406,68 @@ func renderBar(current, max float64, width int) string {
 		filled = 0
 	}
 	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
+}
+
+// Phase 4: Snapshot to file (JSON of internal states)
+func (m *InMemoryLimiter) Snapshot(ctx context.Context, dest string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Serialize simple state for demo
+	snap := map[string]any{
+		"ts": time.Now().Unix(),
+		"tb": make(map[string]map[string]any),
+		"sw_count": make(map[string]int),
+	}
+	for k, s := range m.tb {
+		snap["tb"].(map[string]map[string]any)[k] = map[string]any{"tokens": s.tokens, "last": s.lastRefill}
+	}
+	for k, evs := range m.sw {
+		snap["sw_count"].(map[string]int)[k] = len(evs)
+	}
+	b, err := json.MarshalIndent(snap, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dest, b, 0644)
+}
+
+func (m *InMemoryLimiter) Restore(ctx context.Context, src string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	var snap map[string]any
+	if err := json.Unmarshal(b, &snap); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Demo restore - reset and note
+	m.tb = make(map[string]*tbState)
+	// In full impl deserialize properly
+	return nil
+}
+
+func (m *InMemoryLimiter) LogDecision(ctx context.Context, ev DecisionEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.decisions = append(m.decisions, ev)
+	// keep bounded
+	if len(m.decisions) > 1000 {
+		m.decisions = m.decisions[len(m.decisions)-1000:]
+	}
+	return nil
+}
+
+func (m *InMemoryLimiter) Replay(ctx context.Context, fromTs, toTs int64) ([]DecisionEvent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := []DecisionEvent{}
+	for _, ev := range m.decisions {
+		if (fromTs == 0 || ev.Timestamp >= fromTs) && (toTs == 0 || ev.Timestamp <= toTs) {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
 }

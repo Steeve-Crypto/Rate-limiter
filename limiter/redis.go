@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	redis "github.com/go-redis/redis/v8"
 )
 
 // RedisLimiter implements Limiter backed by Redis.
@@ -394,5 +394,78 @@ func (r *RedisLimiter) History(ctx context.Context, key string, algo Algorithm, 
 		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
+}
+
+// Phase 4 Redis persistence
+
+func (r *RedisLimiter) Snapshot(ctx context.Context, dest string) error {
+	// For Redis backend, snapshot is implicit in Redis keys.
+	// We can copy active keys to a snapshot set or just rely on Redis persistence.
+	// For demo: write a marker.
+	key := "rl:snapshot:meta"
+	return r.client.Set(ctx, key, time.Now().Unix(), 0).Err()
+}
+
+func (r *RedisLimiter) Restore(ctx context.Context, src string) error {
+	// Redis data is already persistent if using AOF/RDB.
+	return nil
+}
+
+func (r *RedisLimiter) LogDecision(ctx context.Context, ev DecisionEvent) error {
+	// Use Redis Stream for durable event log
+	streamKey := "rl:decisions"
+	data := map[string]interface{}{
+		"ts":       ev.Timestamp,
+		"key":      ev.Key,
+		"algo":     string(ev.Algorithm),
+		"allowed":  ev.Allowed,
+		"rem":      ev.Remaining,
+		"limit":    ev.Limit,
+		"cost":     ev.Cost,
+	}
+	if len(ev.Labels) > 0 {
+		b, _ := json.Marshal(ev.Labels)
+		data["labels"] = string(b)
+	}
+	_, err := r.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: streamKey,
+		Values: data,
+	}).Result()
+	return err
+}
+
+func (r *RedisLimiter) Replay(ctx context.Context, fromTs, toTs int64) ([]DecisionEvent, error) {
+	streamKey := "rl:decisions"
+	// Simple range using XRevRange for recent
+	start := fmt.Sprintf("%d", fromTs)
+	end := fmt.Sprintf("%d", toTs)
+	if fromTs == 0 {
+		start = "-"
+	}
+	if toTs == 0 {
+		end = "+"
+	}
+	msgs, err := r.client.XRevRange(ctx, streamKey, end, start).Result()
+	if err != nil {
+		return nil, err
+	}
+	events := []DecisionEvent{}
+	for _, msg := range msgs {
+		ev := DecisionEvent{}
+		if ts, ok := msg.Values["ts"].(string); ok {
+			fmt.Sscanf(ts, "%d", &ev.Timestamp)
+		}
+		ev.Key, _ = msg.Values["key"].(string)
+		algoStr, _ := msg.Values["algo"].(string)
+		ev.Algorithm = Algorithm(algoStr)
+		if a, ok := msg.Values["allowed"].(string); ok {
+			ev.Allowed = a == "1" || a == "true"
+		}
+		if rem, ok := msg.Values["rem"].(string); ok {
+			fmt.Sscanf(rem, "%d", &ev.Remaining)
+		}
+		events = append(events, ev)
+	}
+	return events, nil
 }
 
