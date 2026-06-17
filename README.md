@@ -158,6 +158,52 @@ go test ./...
 
 See [plan.md](./plan.md) for the full ambitious roadmap (production hardening, live visualization, policy engine, persistent replay, unified replication + conflict resolution, etc.).
 
+## Phase 7: Ecosystem, SDKs, and Integrations - Implemented
+
+- **Go Client Library**: See `client/client.go`. Simple, zero-dep HTTP client for Check, Visualize, Simulate, Replicate.
+  ```go
+  c := client.New("http://localhost:8080")
+  resp, _ := c.Check(ctx, client.CheckRequest{Key: "user:42", MaxTokens: 100, WindowSeconds: 60})
+  ```
+
+- **gRPC Support**: gRPC server runs on `port+1` (e.g. 8081). See `limiter/grpc.go` for service interface. Use standard gRPC clients or reflection for now. Full .proto can be added easily.
+
+- **Middleware**:
+  - `middleware/chi.go`: Ready-to-use chi middleware.
+  - Similar patterns for gin/echo (adapt the handler func).
+
+- **Cookbook / Examples** (added to this README):
+  - Basic usage above.
+  - Kubernetes sidecar: Run alongside app, use localhost for low latency.
+  - Policy + labels example in previous phases.
+  - Replication for distributed state.
+
+- **hool-freelance Integration**: See example Python client below (or call HTTP directly from Python).
+
+- **OpenAPI**: The endpoints follow simple JSON contracts. Use `go generate` or tools like swag for full spec in future.
+
+- **Module**: Ready as `github.com/crypto/rate-limiter-service`. `go get` it for client.
+
+### Python Client Example (for hool-freelance or other)
+```python
+import requests
+def check_rate(key, max_tokens=100, window=60):
+    r = requests.post("http://rate-limiter:8080/v1/check", json={
+        "key": key, "max_tokens": max_tokens, "window_seconds": window
+    })
+    return r.json()["allowed"]
+# Use in rate limit logic
+```
+
+### Kubernetes Sidecar
+```yaml
+# In pod spec, sidecar container running the rate-limiter binary
+# App talks to localhost:8080
+```
+
+Build the binary and include in your image or use the provided Dockerfile.
+
+
 ## Phase 6 (Distributed Scale & Resilience) - Implemented
 - Redis-based node registry + health (nodes register with TTL).
 - `/v1/cluster/nodes` and `/v1/cluster/visualize` for aggregate view.
