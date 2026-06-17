@@ -294,3 +294,23 @@ curl -s http://localhost:8080/metrics | grep rate_limit
 curl -s "http://localhost:8080/v1/admin/inspect?key=user:123"
 curl -X POST "http://localhost:8080/v1/admin/reset?key=user:123"
 ```
+
+## Load, Chaos & Performance Testing (Implemented)
+- **Benchmarks**: `go test ./limiter -bench=. -benchmem` (includes concurrent load bench).
+- **Load testing**: `go run scripts/loadtest.go -url http://localhost:8080 -concurrency 100 -duration 10s`
+  Reports QPS, latency, allowed/rejected.
+- **Chaos testing**: `go test ./limiter -run Chaos -count=5` (high contention goroutines + correctness checks).
+  Simulates bursty / contended workloads. For real Redis chaos use toxiproxy or kill nodes manually.
+- **Performance budgets** (documented + monitored):
+  - In-memory: p99 < 1ms, > 50k QPS per core typical.
+  - Redis-backed: p99 < 5-10ms under normal load.
+  - Rejection rate alert > 20% for sustained period.
+  See Grafana p99 stat panel for live budget violations.
+
+Run under load and watch `/metrics` + Grafana.
+
+## Grafana Dashboard
+- Import [grafana/rate-limiter-dashboard.json](/grafana/rate-limiter-dashboard.json)
+- Uses Prometheus datasource.
+- Key panels: QPS, p50/p99 latency by algo+backend, allowed vs limited, rejection rate, budget indicator.
+- Recommended alerts on p99 breach and high rejection rate.

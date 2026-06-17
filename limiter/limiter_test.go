@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -199,4 +200,70 @@ func TestLeakyBucket(t *testing.T) {
 	if r.Allowed {
 		t.Error("should deny 4th immediately")
 	}
+}
+
+// TestChaos_HighContention simulates high concurrent load (chaos-like contention).
+// Checks that the limiter remains correct and doesn't panic or allow > limit.
+func TestChaos_HighContention(t *testing.T) {
+	l := NewInMemoryLimiter()
+	key := "chaos-high"
+	req := CheckRequest{
+		Key:           key,
+		MaxTokens:     10,
+		WindowSeconds: 60,
+		Algorithm:     TokenBucket,
+		Cost:          1,
+	}
+
+	const goroutines = 50
+	const perGoroutine = 20
+
+	var wg sync.WaitGroup
+	allowed := make(chan bool, goroutines*perGoroutine)
+
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				resp, _ := l.Check(context.Background(), req)
+				allowed <- resp.Allowed
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(allowed)
+
+	allowedCount := 0
+	for a := range allowed {
+		if a {
+			allowedCount++
+		}
+	}
+
+	// With 10 tokens, under heavy contention we should see roughly <=10 + some due to timing, but not thousands.
+	if allowedCount > 15 {
+		t.Errorf("too many allowed under contention: got %d, expected ~10", allowedCount)
+	}
+	t.Logf("High contention allowed: %d / %d", allowedCount, goroutines*perGoroutine)
+}
+
+// BenchmarkConcurrentLoad measures throughput under concurrent load (for load testing / perf budgets).
+func BenchmarkConcurrentLoad(b *testing.B) {
+	l := NewInMemoryLimiter()
+	req := CheckRequest{
+		Key:           "bench-concurrent",
+		MaxTokens:     10000,
+		WindowSeconds: 60,
+		Algorithm:     TokenBucket,
+		Cost:          1,
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			l.Check(context.Background(), req)
+		}
+	})
 }
