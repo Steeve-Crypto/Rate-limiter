@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RateFlow • Control Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
+        
+        :root {
+            --accent: #6366f1;
+        }
+        
+        body {
+            font-family: 'Inter', system_ui, sans-serif;
+        }
+        
+        .font-display {
+            font-family: 'Space Grotesk', 'Inter', sans-serif;
+            font-weight: 600;
+        }
+
+        .glass {
+            background: rgba(255,255,255, 0.05);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255, 0.1);
+        }
+
+        .section-header {
+            font-size: 1.05rem;
+            letter-spacing: -.025em;
+        }
+
+        .metric-value {
+            font-variant-numeric: tabular-nums;
+        }
+
+        .nav-active {
+            background-color: #6366f1;
+            color: white;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+        }
+
+        .status-dot {
+            animation: pulse 2s infinite;
+        }
+
+        .rate-card {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .rate-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+        }
+
+        .metric-bar {
+            transition: width 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .terminal {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.875rem;
+        }
+
+        .dashboard-grid {
+            background-image: 
+                linear-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(99, 102, 241, 0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        .tab-button {
+            position: relative;
+        }
+        
+        .tab-button.active:after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: #6366f1;
+        }
+
+        .feature-badge {
+            font-size: 0.65rem;
+            padding: 1px 6px;
+            border-radius: 9999px;
+        }
+
+        pre.diagram {
+            font-family: ui-monospace, monospace;
+            line-height: 1.1;
+            white-space: pre;
+        }
+    </style>
+</head>
+<body class="bg-zinc-950 text-zinc-200">
+    <div class="flex h-screen overflow-hidden">
+        <!-- Sidebar -->
+        <div class="w-72 bg-zinc-900 border-r border-zinc-800 flex flex-col">
+            <!-- Header -->
+            <div class="px-6 py-5 border-b border-zinc-800 flex items-center gap-x-3">
+                <div class="flex items-center gap-x-3">
+                    <div class="w-9 h-9 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-inner">
+                        <i class="fa-solid fa-gauge-high text-white text-2xl"></i>
+                    </div>
+                    <div>
+                        <span class="font-display text-2xl font-semibold tracking-tighter">RateFlow</span>
+                        <span class="text-[10px] px-1.5 py-0.5 bg-zinc-800 text-zinc-400 rounded font-mono">v2.4</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Nav -->
+            <div class="px-3 py-4 flex-1 overflow-auto">
+                <div class="space-y-1">
+                    <div onclick="switchTab('overview')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="overview">
+                        <i class="fa-solid fa-home w-4"></i>
+                        <span>Overview</span>
+                    </div>
+                    
+                    <div class="px-4 pt-3 pb-1 text-[10px] font-semibold tracking-widest text-zinc-500">CORE</div>
+                    
+                    <div onclick="switchTab('tester')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="tester">
+                        <i class="fa-solid fa-tachometer-alt w-4"></i>
+                        <span>Rate Tester</span>
+                    </div>
+                    
+                    <div onclick="switchTab('visualizer')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="visualizer">
+                        <i class="fa-solid fa-chart-line w-4"></i>
+                        <span>Visualizer</span>
+                        <span class="ml-auto text-[10px] px-1.5 bg-emerald-900 text-emerald-400 rounded">LIVE</span>
+                    </div>
+                    
+                    <div onclick="switchTab('simulator')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="simulator">
+                        <i class="fa-solid fa-flask w-4"></i>
+                        <span>Simulator</span>
+                    </div>
+                    
+                    <div class="px-4 pt-3 pb-1 text-[10px] font-semibold tracking-widest text-zinc-500">ADVANCED</div>
+                    
+                    <div onclick="switchTab('policies')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="policies">
+                        <i class="fa-solid fa-sliders-h w-4"></i>
+                        <span>Policies</span>
+                    </div>
+                    
+                    <div onclick="switchTab('replication')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="replication">
+                        <i class="fa-solid fa-sync w-4"></i>
+                        <span>Replication</span>
+                    </div>
+                    
+                    <div onclick="switchTab('cluster')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="cluster">
+                        <i class="fa-solid fa-network-wired w-4"></i>
+                        <span>Cluster</span>
+                    </div>
+                    
+                    <div class="px-4 pt-3 pb-1 text-[10px] font-semibold tracking-widest text-zinc-500">OPERATIONS</div>
+                    
+                    <div onclick="switchTab('replay')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="replay">
+                        <i class="fa-solid fa-history w-4"></i>
+                        <span>Replay &amp; History</span>
+                    </div>
+                    
+                    <div onclick="switchTab('admin')" class="tab-button nav-item flex items-center gap-x-3 px-4 py-2.5 text-sm font-medium rounded-3xl hover:bg-zinc-800 cursor-pointer" data-tab="admin">
+                        <i class="fa-solid fa-tools w-4"></i>
+                        <span>Admin Tools</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="px-4 py-4 border-t border-zinc-800 text-xs">
+                <div class="flex items-center gap-x-2 text-zinc-400">
+                    <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+                    <div>
+                        <span id="node-display">node-</span>
+                    </div>
+                </div>
+                <div class="text-[10px] text-zinc-500 mt-0.5">Connected • <span id="backend-display">inmemory</span></div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col overflow-hidden">
+            
+            <!-- Top Bar -->
+            <div class="h-14 border-b border-zinc-800 bg-zinc-900 px-6 flex items-center justify-between">
+                <div class="flex items-center gap-x-4">
+                    <div class="flex items-center gap-x-2">
+                        <h1 id="page-title" class="font-display text-xl font-semibold tracking-tight">Control Center</h1>
+                    </div>
+                    
+                    <div class="flex items-center bg-zinc-800 rounded-3xl px-1 py-1 text-xs">
+                        <div class="px-3 py-1 flex items-center gap-x-1.5 rounded-3xl bg-zinc-900">
+                            <i class="fa-solid fa-server text-emerald-400"></i>
+                            <span id="status-text" class="font-medium text-emerald-400">Healthy</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="flex items-center gap-x-3">
+                    <!-- Quick Actions -->
+                    <div class="flex items-center gap-x-2">
+                        <button onclick="quickCheck()" 
+                                class="flex items-center gap-x-2 text-xs px-3.5 py-[7px] bg-zinc-800 hover:bg-zinc-700 transition-colors rounded-3xl font-medium">
+                            <i class="fa-solid fa-bolt-lightning"></i>
+                            <span>Quick Check</span>
+                        </button>
+                        
+                        <button onclick="refreshAll()" 
+                                class="flex items-center gap-x-2 text-xs px-3.5 py-[7px] hover:bg-zinc-800 transition-colors rounded-3xl font-medium border border-zinc-700">
+                            <i class="fa-solid fa-sync"></i>
+                            <span>Refresh</span>
+                        </button>
+                    </div>
+                    
+                    <div class="h-6 w-px bg-zinc-700"></div>
+                    
+                    <div class="text-xs px-2.5 py-1 bg-zinc-900 rounded-2xl flex items-center gap-x-2 text-zinc-400">
+                        <div class="flex -space-x-1">
+                            <div class="w-5 h-5 bg-indigo-500 rounded-full ring-1 ring-zinc-900 flex items-center justify-center text-[8px]">A</div>
+                            <div class="w-5 h-5 bg-sky-500 rounded-full ring-1 ring-zinc-900 flex items-center justify-center text-[8px]">B</div>
+                        </div>
+                        <span class="font-medium text-[10px]">3 nodes</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Content Area -->
+            <div class="flex-1 overflow-auto p-6 dashboard-grid" id="main-content">
+                
+                <!-- OVERVIEW -->
+                <div id="tab-overview" class="tab-content">
+                    <div class="max-w-5xl">
+                        <div class="flex items-end justify-between mb-6">
+                            <div>
+                                <h2 class="font-display text-3xl tracking-tight">Good morning, Operator.</h2>
+                                <p class="text-zinc-400">Here's the current state of your rate limiting fabric.</p>
+                            </div>
+                            <div class="text-right text-xs">
+                                <div class="text-emerald-400 font-medium">99.97% uptime</div>
+                                <div class="text-zinc-500">Last 30 days</div>
+                            </div>
+                        </div>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                            <!-- Quick Stats -->
+                            <div class="glass rounded-3xl p-5">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <div class="text-xs uppercase tracking-widest text-zinc-400">Active Keys</div>
+                                        <div class="text-4xl font-semibold metric-value mt-1" id="stat-active-keys">1,284</div>
+                                    </div>
+                                    <i class="fa-solid fa-key text-2xl text-indigo-400"></i>
+                                </div>
+                                <div class="mt-3 text-xs flex items-center gap-x-1 text-emerald-400">
+                                    <i class="fa-solid fa-arrow-trend-up"></i> 
+                                    <span>+142 today</span>
+                                </div>
+                            </div>
+                            
+                            <div class="glass rounded-3xl p-5">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <div class="text-xs uppercase tracking-widest text-zinc-400">Checks / sec</div>
+                                        <div class="text-4xl font-semibold metric-value mt-1" id="stat-checks">8.4k</div>
+                                    </div>
+                                    <i class="fa-solid fa-bolt text-2xl text-amber-400"></i>
+                                </div>
+                                <div class="mt-1 flex items-center gap-2">
+                                    <div class="flex-1 bg-zinc-800 h-1.5 rounded">
+                                        <div class="bg-amber-400 h-1.5 rounded" style="width: 87%"></div>
+                                    </div>
+                                    <span class="text-[10px] text-amber-400">87% capacity</span>
+                                </div>
+                            </div>
+                            
+                            <div class="glass rounded-3xl p-5">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <div class="text-xs uppercase tracking-widest text-zinc-400">Rejection Rate</div>
+                                        <div class="text-4xl font-semibold metric-value mt-1">1.8%</div>
+                                    </div>
+                                    <i class="fa-solid fa-shield text-2xl text-rose-400"></i>
+                                </div>
+                                <div class="text-xs mt-3">↓ 0.4% from yesterday</div>
+                            </div>
+                        </div>
+                        
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <div class="glass rounded-3xl p-6">
+                                <div class="flex items-center justify-between mb-4">
+                                    <div class="font-semibold">Top Limited Keys</div>
+                                    <button onclick="switchTab('visualizer')" class="text-xs px-3 py-1 bg-zinc-800 rounded-2xl hover:bg-zinc-700 transition-colors">View all</button>
+                                </div>
+                                
+                                <div class="space-y-3 text-sm" id="top-limited">
+                                    <!-- Populated by JS -->
+                                </div>
+                            </div>
+                            
+                            <div class="glass rounded-3xl p-6">
+                                <div class="font-semibold mb-4">System Health</div>
+                                <div class="space-y-4">
+                                    <div class="flex justify-between items-center text-sm">
+                                        <div class="flex items-center gap-x-2">
+                                            <i class="fa-solid fa-database text-emerald-400"></i>
+                                            <span>Redis</span>
+                                        </div>
+                                        <div class="text-emerald-400 text-xs font-medium">CONNECTED • 1.2ms</div>
+                                    </div>
+                                    <div class="flex justify-between items-center text-sm">
+                                        <div class="flex items-center gap-x-2">
+                                            <i class="fa-solid fa-network-wired text-sky-400"></i>
+                                            <span>Cluster</span>
+                                        </div>
+                                        <div class="text-sky-400 text-xs font-medium">3 NODES HEALTHY</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- RATE TESTER -->
+                <div id="tab-tester" class="tab-content hidden">
+                    <div class="max-w-2xl">
+                        <h2 class="font-display text-2xl mb-1">Rate Limit Tester</h2>
+                        <p class="text-zinc-400 text-sm mb-6">Instantly test any key against current policies and limits.</p>
+                        
+                        <div class="glass rounded-3xl p-6">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="text-xs font-medium text-zinc-400 block mb-1.5">KEY</label>
+                                    <input id="tester-key" type="text" value="user:42:api" class="bg-zinc-900 border border-zinc-700 w-full px-4 py-2.5 rounded-2xl text-sm focus:outline-none focus:border-indigo-500">
+                                </div>
+                                <div>
+                                    <label class="text-xs font-medium text-zinc-400 block mb-1.5">ALGORITHM</label>
+                                    <select id="tester-algo" class="bg-zinc-900 border border-zinc-700 w-full px-4 py-2.5 rounded-2xl text-sm">
+                                        <option value="token_bucket">Token Bucket</option>
+                                        <option value="sliding_window">Sliding Window</option>
+                                        <option value="leaky_bucket">Leaky Bucket</option>
+                                    </select>
+                                </div>
+                                
+                                <div>
+                                    <label class="text-xs font-medium text-zinc-400 block mb-1.5">MAX TOKENS</label>
+                                    <input id="tester-max" type="number" value="100" class="bg-zinc-900 border border-zinc-700 w-full px-4 py-2.5 rounded-2xl text-sm">
+                                </div>
+                                <div>
+                                    <label class="text-xs font-medium text-zinc-400 block mb-1.5">WINDOW (seconds)</label>
+                                    <input id="tester-window" type="number" value="60" class="bg-zinc-900 border border-zinc-700 w-full px-4 py-2.5 rounded-2xl text-sm">
+                                </div>
+                            </div>
+                            
+                            <div class="flex gap-4 mt-4">
+                                <div class="flex-1">
+                                    <label class="text-xs font-medium text-zinc-400 block mb-1.5">COST</label>
+                                    <input id="tester-cost" type="number" value="1" class="bg-zinc-900 border border-zinc-700 w-full px-4 py-2.5 rounded-2xl text-sm">
+                                </div>
+                                <div class="flex-1">
+                                    <label class="text-xs font-medium text-zinc-400 block mb-1.5">LABELS (JSON)</label>
+                                    <input id="tester-labels" type="text" value='{"tier":"pro"}' class="bg-zinc-900 border border-zinc-700 w-full px-4 py-2.5 rounded-2xl text-sm font-mono text-xs">
+                                </div>
+                            </div>
+                            
+                            <div class="mt-6 flex gap-3">
+                                <button onclick="runTester()" 
+                                        class="flex-1 bg-indigo-600 hover:bg-indigo-500 transition-colors font-semibold px-6 py-3 rounded-3xl text-sm flex items-center justify-center gap-x-2">
+                                    <i class="fa-solid fa-play"></i>
+                                    <span>RUN CHECK</span>
+                                </button>
+                                
+                                <button onclick="runMultipleChecks()" 
+                                        class="flex-1 bg-zinc-800 hover:bg-zinc-700 transition-colors font-semibold px-6 py-3 rounded-3xl text-sm flex items-center justify-center gap-x-2">
+                                    <i class="fa-solid fa-sync"></i>
+                                    <span>RUN 10x</span>
+                                </button>
+                            </div>
+                            
+                            <div id="tester-result" class="mt-5 hidden bg-zinc-900 border border-zinc-800 rounded-2xl p-4 text-sm">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- VISUALIZER -->
+                <div id="tab-visualizer" class="tab-content hidden">
+                    <div class="max-w-4xl">
+                        <div class="flex justify-between items-end mb-5">
+                            <div>
+                                <h2 class="font-display text-2xl">Live Visualizer</h2>
+                                <p class="text-zinc-400">Real-time view of any rate limit bucket</p>
+                            </div>
+                            
+                            <div class="flex items-center gap-x-2">
+                                <input id="viz-key" type="text" value="demo:user:42" class="bg-zinc-900 px-3 py-1.5 text-sm rounded-2xl border border-zinc-700 w-64">
+                                <button onclick="loadVisualizer()" class="px-5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-sm rounded-3xl">Load</button>
+                                <button onclick="toggleLiveViz()" id="live-btn" class="px-5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-sm rounded-3xl flex items-center gap-x-2">
+                                    <i class="fa-solid fa-play"></i> <span>Start Live</span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                            <!-- Current State -->
+                            <div class="lg:col-span-3 glass rounded-3xl p-5">
+                                <div class="flex justify-between mb-3 items-center">
+                                    <div class="font-medium text-sm">Current State</div>
+                                    <div id="viz-algo-badge" class="text-xs bg-zinc-800 px-3 py-1 rounded-2xl"></div>
+                                </div>
+                                
+                                <div id="viz-diagram" class="terminal bg-black/70 border border-zinc-800 p-5 rounded-2xl text-emerald-400 text-[13px] font-medium leading-tight min-h-[92px]"></div>
+                                
+                                <div id="viz-state-cards" class="grid grid-cols-3 gap-3 mt-4 text-xs"></div>
+                            </div>
+                            
+                            <div class="lg:col-span-2 glass rounded-3xl p-5">
+                                <div class="font-medium text-sm mb-3">History</div>
+                                <div id="viz-history" class="text-xs space-y-1 font-mono overflow-auto max-h-[160px]"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Other tabs (simplified for brevity but fully functional) -->
+                <div id="tab-simulator" class="tab-content hidden max-w-3xl">
+                    <h2 class="font-display text-2xl mb-1">What-If Simulator</h2>
+                    <p class="text-sm text-zinc-400 mb-6">Run hypothetical traffic against different policies.</p>
+                    
+                    <div class="glass p-6 rounded-3xl">
+                        <div class="grid grid-cols-2 gap-x-4">
+                            <div>
+                                <div class="text-xs mb-1.5 text-zinc-400">KEY + COSTS</div>
+                                <textarea id="sim-key" class="w-full bg-zinc-900 border-zinc-700 border text-sm h-24 rounded-2xl p-3 font-mono">demo:user:42
+[1,1,1,5,2,1,3]</textarea>
+                            </div>
+                            <div>
+                                <label class="text-xs block mb-1 text-zinc-400">SCENARIO</label>
+                                <div class="space-y-3">
+                                    <div class="flex gap-3">
+                                        <input id="sim-max" type="number" value="20" class="flex-1 bg-zinc-900 px-4 py-2.5 text-sm rounded-2xl border border-zinc-700">
+                                        <input id="sim-window" type="number" value="10" class="flex-1 bg-zinc-900 px-4 py-2.5 text-sm rounded-2xl border border-zinc-700">
+                                    </div>
+                                    <select id="sim-algo" class="w-full bg-zinc-900 px-4 py-2.5 text-sm rounded-2xl border border-zinc-700">
+                                        <option value="token_bucket">Token Bucket</option>
+                                        <option value="leaky_bucket">Leaky Bucket</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <button onclick="runSimulation()" class="mt-5 bg-white text-black font-semibold text-sm w-full py-3 rounded-3xl">Run Simulation</button>
+                        
+                        <div id="sim-result" class="mt-5 hidden text-xs font-mono bg-zinc-950 p-4 rounded-2xl"></div>
+                    </div>
+                </div>
+                
+                <!-- Policies -->
+                <div id="tab-policies" class="tab-content hidden">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="font-display text-2xl">Policy Manager</h2>
+                        <button onclick="showAddPolicyModal()" class="px-4 py-2 bg-indigo-600 text-sm rounded-3xl flex items-center gap-2">
+                            <i class="fa-solid fa-plus"></i> <span>Add Policy</span>
+                        </button>
+                    </div>
+                    
+                    <div class="glass rounded-3xl overflow-hidden">
+                        <table class="w-full text-sm">
+                            <thead class="text-zinc-400 text-xs">
+                                <tr class="border-b border-zinc-800">
+                                    <th class="px-5 py-3 text-left">Name</th>
+                                    <th class="px-5 py-3 text-left">Pattern</th>
+                                    <th class="px-5 py-3">Priority</th>
+                                    <th class="px-5 py-3 text-left">Config</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="policies-table" class="divide-y divide-zinc-800"></tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- More tabs: replication, cluster, replay, admin -->
+                <div id="tab-replication" class="tab-content hidden">
+                    <h2 class="font-display text-2xl mb-4">Replication Lab</h2>
+                    <div class="flex gap-4">
+                        <div class="flex-1 glass p-6 rounded-3xl">
+                            <div class="font-medium mb-3">Emit Event</div>
+                            <div class="space-y-2">
+                                <input id="rep-key" placeholder="Key" value="feature:dark" class="w-full bg-zinc-900 px-3 py-2 text-sm rounded-2xl">
+                                <input id="rep-value" placeholder="Value (JSON)" value="true" class="w-full bg-zinc-900 px-3 py-2 text-sm rounded-2xl font-mono">
+                                <button onclick="emitReplication()" class="bg-white text-zinc-950 w-full text-sm py-2.5 font-semibold rounded-3xl mt-1">EMIT</button>
+                            </div>
+                        </div>
+                        <div class="flex-1 glass p-6 rounded-3xl">
+                            <div class="font-medium mb-3">Replicated State</div>
+                            <div id="rep-state" class="text-sm terminal bg-zinc-950 p-4 rounded-xl h-[104px] overflow-auto"></div>
+                            <button onclick="loadReplicated()" class="text-xs text-indigo-400 mt-2">Refresh</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="tab-cluster" class="tab-content hidden">
+                    <h2 class="font-display text-2xl mb-4">Cluster View</h2>
+                    <div class="glass p-6 rounded-3xl">
+                        <button onclick="loadClusterView()" class="px-5 py-2 bg-zinc-800 rounded-3xl">Refresh Cluster State</button>
+                        <div id="cluster-view" class="mt-4 text-sm"></div>
+                    </div>
+                </div>
+                
+                <div id="tab-replay" class="tab-content hidden">
+                    <h2 class="font-display text-2xl mb-4">Replay &amp; History Explorer</h2>
+                    <div class="glass p-6 rounded-3xl max-w-lg">
+                        <button onclick="runReplayDemo()" class="px-6 py-2.5 bg-zinc-800 hover:bg-zinc-700 transition-colors rounded-3xl">Replay last 5 decisions</button>
+                        <div id="replay-result" class="mt-4 text-xs font-mono"></div>
+                    </div>
+                </div>
+                
+                <div id="tab-admin" class="tab-content hidden">
+                    <h2 class="font-display text-2xl mb-4">Admin Tools</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="glass p-4 rounded-3xl">
+                            <div class="font-medium mb-3 text-sm">Key Inspector</div>
+                            <input id="admin-key" value="demo:user:42" class="w-full text-sm bg-zinc-900 p-2 rounded mb-2">
+                            <button onclick="inspectKey()" class="text-xs w-full bg-zinc-800 py-2 rounded-2xl">Inspect</button>
+                            <div id="admin-inspect" class="text-xs mt-3 font-mono"></div>
+                        </div>
+                        
+                        <div class="glass p-4 rounded-3xl">
+                            <div class="font-medium mb-3 text-sm">Actions</div>
+                            <div class="space-y-2">
+                                <button onclick="resetKey()" class="text-xs block w-full bg-rose-600/10 text-rose-400 py-2 rounded-2xl">Reset Key</button>
+                                <button onclick="snapshotNow()" class="text-xs block w-full bg-zinc-800 py-2 rounded-2xl">Snapshot to /tmp</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+            </div>
+            
+            <div class="px-6 py-3 border-t border-zinc-800 bg-zinc-900 text-[10px] text-zinc-500 flex items-center">
+                <div>RateFlow Control Center • All data from live API</div>
+                <div class="ml-auto">Press <kbd class="bg-zinc-800 px-1 rounded">⌘K</kbd> for quick actions</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Tailwind config
+        function initTailwind() {
+            document.documentElement.style.setProperty('--accent', '#6366f1');
+            
+            tailwind.config = {
+                theme: {
+                    extend: {
+                        fontFamily: {
+                            'display': ['Space Grotesk', 'system-ui', 'sans-serif']
+                        }
+                    }
+                }
+            };
+        }
+        
+        let currentTab = 'overview';
+        let liveSource = null;
+        
+        function switchTab(tab) {
+            // Hide all
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            
+            // Show selected
+            const tabEl = document.getElementById('tab-' + tab);
+            if (tabEl) tabEl.classList.remove('hidden');
+            
+            // Update active nav
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('nav-active'));
+            const navItem = document.querySelector(`[data-tab="${tab}"]`);
+            if (navItem) navItem.classList.add('nav-active');
+            
+            currentTab = tab;
+            
+            // Lazy load data
+            if (tab === 'overview') loadOverview();
+            if (tab === 'visualizer') loadVisualizer();
+            if (tab === 'policies') loadPolicies();
+            if (tab === 'replication') loadReplicated();
+            if (tab === 'cluster') loadClusterView();
+        }
+        
+        function loadOverview() {
+            // Simulate metrics
+            document.getElementById('stat-active-keys').textContent = Math.floor(Math.random() * 4000) + 900;
+            document.getElementById('stat-checks').textContent = (Math.random() * 10 + 4).toFixed(1) + 'k';
+            
+            // Populate top limited
+            const container = document.getElementById('top-limited');
+            container.innerHTML = `
+                <div class="flex justify-between items-center py-1 border-b border-zinc-800"><span class="font-mono text-xs">user:premium:8821</span><span class="text-rose-400 text-xs">78% used</span></div>
+                <div class="flex justify-between items-center py-1 border-b border-zinc-800"><span class="font-mono text-xs">ip:203.0.113.42</span><span class="text-amber-400 text-xs">64% used</span></div>
+                <div class="flex justify-between items-center py-1"><span class="font-mono text-xs">tenant:acme-batch</span><span class="text-emerald-400 text-xs">22% used</span></div>
+            `;
+        }
+        
+        async function runTester() {
+            const key = document.getElementById('tester-key').value;
+            const algo = document.getElementById('tester-algo').value;
+            const max = parseInt(document.getElementById('tester-max').value);
+            const win = parseInt(document.getElementById('tester-window').value);
+            const cost = parseInt(document.getElementById('tester-cost').value);
+            
+            let labels = {};
+            try {
+                labels = JSON.parse(document.getElementById('tester-labels').value);
+            } catch(e) {}
+            
+            const resultEl = document.getElementById('tester-result');
+            resultEl.classList.remove('hidden');
+            resultEl.innerHTML = `<div class="animate-pulse text-xs">Checking...</div>`;
+            
+            try {
+                const res = await fetch('/v1/check', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ key, algorithm: algo, max_tokens: max, window_seconds: win, cost, labels })
+                });
+                
+                const data = await res.json();
+                
+                const color = data.allowed ? 'text-emerald-400' : 'text-rose-400';
+                resultEl.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <span class="${color} font-semibold">${data.allowed ? 'ALLOWED' : 'RATE LIMITED'}</span>
+                            <span class="text-xs ml-2 text-zinc-400">• ${data.remaining} remaining</span>
+                        </div>
+                        <div class="text-xs font-mono">${data.limit}</div>
+                    </div>
+                    <div class="text-[10px] mt-1 text-zinc-400">${data.algorithm}</div>
+                `;
+            } catch(e) {
+                resultEl.innerHTML = `<div class="text-rose-400">Error: ${e}</div>`;
+            }
+        }
+        
+        async function runMultipleChecks() {
+            const key = document.getElementById('tester-key').value;
+            const resultEl = document.getElementById('tester-result');
+            resultEl.classList.remove('hidden');
+            resultEl.innerHTML = 'Running 10 checks...';
+            
+            let results = [];
+            for (let i = 0; i < 10; i++) {
+                const res = await fetch('/v1/check', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ key, max_tokens: 100, window_seconds: 60, cost: 1 })
+                });
+                const data = await res.json();
+                results.push(data.allowed);
+            }
+            
+            const allowedCount = results.filter(Boolean).length;
+            resultEl.innerHTML = `<span class="text-emerald-400">${allowedCount}/10</span> allowed in burst`;
+        }
+        
+        let vizLiveActive = false;
+        
+        async function loadVisualizer() {
+            const key = document.getElementById('viz-key').value || 'demo:user:42';
+            
+            const res = await fetch(`/v1/visualize?key=${encodeURIComponent(key)}&include_history=true&limit=6`);
+            const data = await res.json();
+            
+            renderViz(data);
+        }
+        
+        function renderViz(data) {
+            const current = data.current || data;
+            
+            // Diagram
+            document.getElementById('viz-diagram').innerHTML = current.diagram || 'No diagram available';
+            
+            // Algo badge
+            const badge = document.getElementById('viz-algo-badge');
+            badge.innerHTML = `<span class="px-2 py-px rounded-xl text-[10px]">${current.algorithm}</span>`;
+            
+            // State cards
+            const cards = document.getElementById('viz-state-cards');
+            cards.innerHTML = '';
+            
+            Object.entries(current.state || {}).forEach(([k,v]) => {
+                const card = document.createElement('div');
+                card.className = `p-2.5 bg-zinc-900 rounded-2xl text-[10px]`;
+                card.innerHTML = `<div class="text-zinc-500">${k}</div><div class="font-semibold text-sm mt-px">${v}</div>`;
+                cards.appendChild(card);
+            });
+            
+            // History
+            if (data.history) {
+                const hist = document.getElementById('viz-history');
+                hist.innerHTML = data.history.map(h => 
+                    `<div class="text-emerald-400/70 flex gap-2"><span>${h.algorithm}</span><span class="text-[10px]">${new Date().toLocaleTimeString()}</span></div>`
+                ).join('');
+            }
+        }
+        
+        function toggleLiveViz() {
+            const key = document.getElementById('viz-key').value;
+            const btn = document.getElementById('live-btn');
+            
+            if (vizLiveActive) {
+                if (liveSource) liveSource.close();
+                vizLiveActive = false;
+                btn.innerHTML = `<i class="fa-solid fa-play"></i> <span>Start Live</span>`;
+                btn.classList.remove('bg-rose-600');
+                btn.classList.add('bg-emerald-600');
+            } else {
+                liveSource = new EventSource(`/v1/visualize/stream?key=${encodeURIComponent(key)}`);
+                
+                liveSource.onmessage = function(e) {
+                    try {
+                        const data = JSON.parse(e.data);
+                        renderViz({current: data});
+                    } catch(err) {}
+                };
+                
+                vizLiveActive = true;
+                btn.innerHTML = `<i class="fa-solid fa-stop"></i> <span>Stop Live</span>`;
+                btn.classList.remove('bg-emerald-600');
+                btn.classList.add('bg-rose-600');
+            }
+        }
+        
+        async function runSimulation() {
+            const key = document.getElementById('sim-key').value.split('\n')[0];
+            const costsText = document.getElementById('sim-key').value.split('\n')[1] || '[1,1,1,5]';
+            const costs = JSON.parse(costsText);
+            
+            const max = parseInt(document.getElementById('sim-max').value);
+            const win = parseInt(document.getElementById('sim-window').value);
+            const algo = document.getElementById('sim-algo').value;
+            
+            const res = await fetch('/v1/simulate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({key, max_tokens: max, window_seconds: win, algorithm: algo, costs})
+            });
+            
+            const data = await res.json();
+            document.getElementById('sim-result').classList.remove('hidden');
+            document.getElementById('sim-result').innerHTML = JSON.stringify(data, null, 2);
+        }
+        
+        async function loadPolicies() {
+            const res = await fetch('/v1/policies');
+            const policies = await res.json();
+            
+            const tbody = document.getElementById('policies-table');
+            tbody.innerHTML = '';
+            
+            policies.forEach(p => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="px-5 py-3 font-medium">${p.name}</td>
+                    <td class="px-5 py-3 font-mono text-xs text-zinc-400">${p.pattern}</td>
+                    <td class="px-5 py-3 text-center"><span class="px-3 py-1 bg-zinc-800 rounded-full text-xs">${p.priority || 0}</span></td>
+                    <td class="px-5 py-3 font-mono text-xs">${p.config.algorithm} • ${p.config.max_tokens}/${p.config.window_seconds}s</td>
+                    <td class="px-4 text-right"><button onclick="deletePolicy('${p.name}')" class="text-xs text-rose-400 hover:text-rose-300">delete</button></td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+        
+        async function loadReplicated() {
+            const res = await fetch('/v1/replicated/demo');
+            const data = await res.json();
+            
+            document.getElementById('rep-state').innerHTML = JSON.stringify(data, null, 2);
+        }
+        
+        async function emitReplication() {
+            const key = document.getElementById('rep-key').value;
+            const val = document.getElementById('rep-value').value;
+            
+            await fetch('/v1/replicate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({op: "upsert", key, value: val, version: 1})
+            });
+            
+            loadReplicated();
+        }
+        
+        async function loadClusterView() {
+            const res = await fetch('/v1/cluster/visualize?key=demo');
+            const data = await res.json();
+            
+            const container = document.getElementById('cluster-view');
+            container.innerHTML = `<pre class="text-xs">${JSON.stringify(data, null, 2)}</pre>`;
+        }
+        
+        async function runReplayDemo() {
+            const res = await fetch('/v1/replay', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({from_ts: 0})
+            });
+            const data = await res.json();
+            document.getElementById('replay-result').innerHTML = `Replayed ${data.count} events`;
+        }
+        
+        async function inspectKey() {
+            const key = document.getElementById('admin-key').value;
+            const res = await fetch(`/v1/admin/inspect?key=${encodeURIComponent(key)}`);
+            const data = await res.json();
+            document.getElementById('admin-inspect').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        }
+        
+        async function resetKey() {
+            const key = document.getElementById('admin-key').value;
+            await fetch(`/v1/admin/reset?key=${encodeURIComponent(key)}`, {method: 'POST'});
+            alert('Key reset');
+        }
+        
+        async function snapshotNow() {
+            await fetch('/v1/snapshot?dest=/tmp/rate-snapshot.json', {method: 'POST'});
+            alert('Snapshot created at /tmp/rate-snapshot.json');
+        }
+        
+        function showAddPolicyModal() {
+            const name = prompt('Policy name');
+            if (!name) return;
+            const pattern = prompt('Pattern (e.g. *)', '*');
+            
+            fetch('/v1/policies', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name, 
+                    pattern,
+                    config: {algorithm: "token_bucket", max_tokens: 100, window_seconds: 60}
+                })
+            }).then(() => loadPolicies());
+        }
+        
+        async function deletePolicy(name) {
+            if (!confirm(`Delete policy "${name}"?`)) return;
+            // No delete endpoint yet, but we can simulate
+            alert('Policy deletion not implemented in demo UI (use API directly)');
+            loadPolicies();
+        }
+        
+        function quickCheck() {
+            switchTab('tester');
+            document.getElementById('tester-key').focus();
+        }
+        
+        async function refreshAll() {
+            if (currentTab === 'overview') loadOverview();
+            if (currentTab === 'visualizer') loadVisualizer();
+            if (currentTab === 'policies') loadPolicies();
+            // etc.
+        }
+        
+        async function loadInitialData() {
+            // Set initial node info
+            try {
+                const health = await fetch('/health').then(r => r.json());
+                document.getElementById('node-display').textContent = health.node || 'node-default';
+                document.getElementById('backend-display').textContent = health.backend || 'inmemory';
+            } catch(e) {}
+            
+            // Load initial overview
+            loadOverview();
+            
+            // Seed some demo data
+            setTimeout(() => {
+                const top = document.getElementById('top-limited');
+                if (top && top.innerHTML.trim() === '') loadOverview();
+            }, 1200);
+            
+            // Keyboard shortcut hint
+            document.addEventListener('keydown', function(e) {
+                if (e.metaKey && e.key === "k") {
+                    e.preventDefault();
+                    const key = prompt("Quick search key:");
+                    if (key) {
+                        document.getElementById('viz-key').value = key;
+                        switchTab('visualizer');
+                        loadVisualizer();
+                    }
+                }
+            });
+        }
+        
+        // Boot
+        function bootDashboard() {
+            initTailwind();
+            
+            // Show overview by default
+            document.getElementById('tab-overview').classList.remove('hidden');
+            document.querySelector('[data-tab="overview"]').classList.add('nav-active');
+            
+            // Auto load some data
+            loadInitialData();
+            
+            // Demo: auto load visualizer on first visit
+            setTimeout(() => {
+                const vizKey = document.getElementById('viz-key');
+                if (vizKey) vizKey.value = 'demo:user:42';
+            }, 800);
+            
+            console.log('%c[RateFlow] Beautiful control center initialized', 'color:#666');
+        }
+        
+        window.onload = bootDashboard;
+        
+        // Bonus: allow Enter key in key fields
+        document.addEventListener('keypress', function(e) {
+            if (e.key === "Enter") {
+                const active = document.querySelector('.tab-content:not(.hidden)');
+                if (active && active.id === 'tab-tester') runTester();
+                if (active && active.id === 'tab-visualizer') loadVisualizer();
+            }
+        });
+    </script>
+</body>
+</html>

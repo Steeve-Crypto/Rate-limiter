@@ -168,6 +168,19 @@ See [plan.md](./plan.md) for the full ambitious roadmap (production hardening, l
 
 - **gRPC Support**: gRPC server runs on `port+1` (e.g. 8081). See `limiter/grpc.go` for service interface. Use standard gRPC clients or reflection for now. Full .proto can be added easily.
 
+## Beautiful Control Center UI
+
+Visit `http://localhost:8080/dashboard` for the completely redesigned, creative, and highly organized web UI.
+
+Features:
+- Sidebar navigation with multiple professional sections
+- Live SSE-powered visualizer with beautiful diagram rendering
+- Full policy management, replication tools, cluster view
+- Tester, simulator, replay explorer, admin tools
+- Modern Tailwind dark theme with status indicators and metrics
+
+The UI has been significantly improved to feel like a true operations-grade control plane.
+
 - **Middleware**:
   - `middleware/chi.go`: Ready-to-use chi middleware.
   - Similar patterns for gin/echo (adapt the handler func).

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,6 +22,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
+
+//go:embed ui/*
+var uiFS embed.FS
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -308,16 +312,9 @@ func main() {
 	})
 
 	r.Get("/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><body><h2>Phase 2 Live Dashboard</h2>
-<input id=k value=demo:1> <button onclick=load()>Load+Hist</button> <button onclick=live()>Live</button> <button onclick=simu()>Sim</button>
-<pre id=o></pre><pre id=l style="height:10em"></pre>
-<script>
-function load(){fetch('/v1/visualize?key='+document.getElementById('k').value+'&include_history=true').then(r=>r.text()).then(t=>document.getElementById('o').textContent=t)}
-function live(){let e=new EventSource('/v1/visualize/stream?key='+document.getElementById('k').value);e.onmessage=m=>document.getElementById('l').textContent=Date.now()+' '+m.data+'\n'+document.getElementById('l').textContent}
-function simu(){fetch('/v1/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:document.getElementById('k').value,costs:[1,2,1]})}).then(r=>r.text()).then(t=>document.getElementById('l').textContent='SIM '+t)}
-setTimeout(load,100)
-</script></body></html>`))
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		data, _ := uiFS.ReadFile("ui/dashboard.html")
+		w.Write(data)
 	})
 
 	slog.Info("server", "port", *port)
