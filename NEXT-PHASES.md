@@ -16,13 +16,13 @@ Core of the ambitious plan is **largely complete**:
 ## Prioritized Remaining Items
 
 ### P0 - Production Hardening (High Value, Relatively Quick)
-1. **OpenTelemetry Tracing** (Plan Phase 1 + cross-cut)
-   - go.sum already has `go.opentelemetry.io/otel/*` (probably pulled transitively).
-   - **No spans, no exporter setup, no propagation in Check/Replicate paths.**
-   - Add: `tracing.go` or in limiter, wire in main (OTLP/stdout/jaeger via env), instrument `Check`, replication, admin, policy resolution.
-   - Propagate trace context.
-   - Expose sampling + resource attrs (service.name, node-id).
-   - Success: Jaeger/OTLP shows traces for a check + replicate flow.
+1. **OpenTelemetry Tracing** (Plan Phase 1 + cross-cut) ✅ **IMPLEMENTED**
+   - Basic but functional: `initTracer()` with stdout exporter (syncer for visibility).
+   - Spans for: `rate_limit.check`, `.visualize`, `.simulate`, `.replicate`, `.replay`, `.policies.*`, `.admin.*`
+   - Rich attributes + events (allowed, rate_limited, key, algorithm, remaining, etc.)
+   - Context propagation + defer shutdown.
+   - Easy to extend to OTLP (just change exporter).
+   - See main.go and README. Resource includes service name.
 
 2. **Security Basics**
    - mTLS example for gRPC + HTTP (Docker/K8s snippets).

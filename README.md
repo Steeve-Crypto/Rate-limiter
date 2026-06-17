@@ -204,6 +204,9 @@ The legacy single-file dashboard.html is kept as fallback when no dist/ exists.
 
 - **OpenAPI + Generated Clients**: Full spec in `openapi.yaml`. Run `./scripts/generate-clients.sh python` (or typescript/go) to emit clients using openapi-generator.
 
+- **OpenTelemetry Tracing**: Initialized on startup (stdout exporter by default for demo). Spans are created for `rate_limit.check`, `visualize`, `simulate`, `replicate`, `replay`, `admin.*` with rich attributes (key, algorithm, allowed, etc.) and events. 
+  Use an OTLP collector in production. See code in main.go: `initTracer()` + `startSpan()`. Context is propagated.
+
 - **Official Go Client**: `client/client.go`
 - **Official Python Client**: `client/python/rate_limiter_client/` (zero-dep, or install via pyproject). See `client/python/README.md`.
 - Also manual thin client for hool-freelance or quick use.

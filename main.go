@@ -43,7 +43,12 @@ func main() {
 
 	// Basic OpenTelemetry tracing (stdout by default; swap exporter for OTLP/Jaeger in prod).
 	// Controlled by env or always-on for now per plan Phase 1.
-	initTracer()
+	tp := initTracer()
+	defer func() {
+		if tp != nil {
+			_ = tp.Shutdown(context.Background())
+		}
+	}()
 
 	var (
 		port     = flag.Int("port", 8080, "port")
@@ -172,8 +177,16 @@ func main() {
 			attribute.Int64("limit", int64(resp.Limit)),
 		)
 
+		if resp.Allowed {
+			span.AddEvent("allowed", oteltrace.WithAttributes(attribute.Int64("remaining", int64(resp.Remaining))))
+		} else {
+			span.AddEvent("rate_limited", oteltrace.WithAttributes(
+				attribute.Int64("retry_after_ms", func() int64 { if resp.RetryAfterMs != nil { return *resp.RetryAfterMs }; return 0 }()),
+			))
+		}
+
 		// Phase 4: log decision
-		lim.LogDecision(r.Context(), limiter.DecisionEvent{
+		lim.LogDecision(ctx, limiter.DecisionEvent{
 			Timestamp: time.Now().UnixMilli(),
 			Key:       req.Key,
 			Algorithm: req.Algorithm,
@@ -205,11 +218,21 @@ func main() {
 	})
 
 	r.Get("/v1/visualize", func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := startSpan(r.Context(), "rate_limit.visualize")
+		defer span.End()
+
 		k := r.URL.Query().Get("key"); if k=="" { http.Error(w,"key",400); return }
 		a := limiter.Algorithm(r.URL.Query().Get("algorithm")); if a=="" { a=limiter.TokenBucket }
 		mt:=uint32(100); if v,_:=strconv.ParseUint(r.URL.Query().Get("max_tokens"),10,32);v>0{mt=uint32(v)}
 		ws:=uint32(60); if v,_:=strconv.ParseUint(r.URL.Query().Get("window_seconds"),10,32);v>0{ws=uint32(v)}
-		viz, _ := lim.Visualize(r.Context(), k, a, mt, ws)
+
+		span.SetAttributes(
+			attribute.String("key", k),
+			attribute.String("algorithm", string(a)),
+			attribute.Int64("max_tokens", int64(mt)),
+		)
+
+		viz, _ := lim.Visualize(ctx, k, a, mt, ws)
 		if r.URL.Query().Get("format") == "html" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			historyHTML := ""
@@ -271,6 +294,9 @@ func main() {
 	})
 
 	r.Post("/v1/simulate", func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := startSpan(r.Context(), "rate_limit.simulate")
+		defer span.End()
+
 		var b struct {
 			Key string `json:"key"`
 			MaxTokens uint32 `json:"max_tokens"`
@@ -283,10 +309,17 @@ func main() {
 		if b.WindowSeconds==0 {b.WindowSeconds=30}
 		if len(b.Costs)==0 {b.Costs = []uint32{1,1,1}}
 		alg := limiter.Algorithm(b.Algorithm); if alg=="" {alg = limiter.TokenBucket}
+
+		span.SetAttributes(
+			attribute.String("key", b.Key),
+			attribute.String("algorithm", string(alg)),
+			attribute.Int("num_costs", len(b.Costs)),
+		)
+
 		sim := limiter.NewInMemoryLimiter()
 		res := []map[string]any{}
 		for _,c:=range b.Costs {
-			resp,_ := sim.Check(r.Context(), limiter.CheckRequest{Key: b.Key, MaxTokens: b.MaxTokens, WindowSeconds: b.WindowSeconds, Algorithm: alg, Cost: c})
+			resp,_ := sim.Check(ctx, limiter.CheckRequest{Key: b.Key, MaxTokens: b.MaxTokens, WindowSeconds: b.WindowSeconds, Algorithm: alg, Cost: c})
 			res = append(res, map[string]any{"cost":c, "allowed":resp.Allowed, "remaining":resp.Remaining})
 		}
 		writeJSON(w, 200, map[string]any{"results":res})
@@ -294,29 +327,47 @@ func main() {
 
 	// Phase 3 Policy API
 	r.Get("/v1/policies", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, policyEngine.ListPolicies())
+		_, span := startSpan(r.Context(), "rate_limit.policies.list")
+		defer span.End()
+		pols := policyEngine.ListPolicies()
+		span.SetAttributes(attribute.Int("policy_count", len(pols)))
+		writeJSON(w, 200, pols)
 	})
 	r.Post("/v1/policies", func(w http.ResponseWriter, r *http.Request) {
+		_, span := startSpan(r.Context(), "rate_limit.policies.add")
+		defer span.End()
 		var p limiter.Policy
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			span.RecordError(err)
 			writeJSON(w, 400, map[string]string{"error": "invalid policy"})
 			return
 		}
+		span.SetAttributes(attribute.String("policy_name", p.Name), attribute.String("pattern", p.Pattern))
 		policyEngine.AddPolicy(p)
 		writeJSON(w, 200, map[string]string{"status": "added", "name": p.Name})
 	})
 
 	// Phase 5: Replication endpoints (unified with event log)
 	r.Post("/v1/replicate", func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := startSpan(r.Context(), "rate_limit.replicate")
+		defer span.End()
+
 		var ev limiter.ReplicationEvent
 		json.NewDecoder(r.Body).Decode(&ev)
 		if ev.Node == "" {
 			ev.Node = *nodeID
 		}
+
+		span.SetAttributes(
+			attribute.String("op", ev.Op),
+			attribute.String("key", ev.Key),
+			attribute.String("node", ev.Node),
+		)
+
 		if replicator != nil {
-			replicator.Emit(r.Context(), ev.Op, ev.Key, ev.Value, ev.Version)
+			replicator.Emit(ctx, ev.Op, ev.Key, ev.Value, ev.Version)
 		} else {
-			lim.EmitReplicationEvent(r.Context(), ev)
+			lim.EmitReplicationEvent(ctx, ev)
 		}
 		writeJSON(w, 200, map[string]string{"status": "emitted", "key": ev.Key})
 	})
@@ -328,14 +379,25 @@ func main() {
 
 	// Phase 4: Replay endpoint
 	r.Post("/v1/replay", func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := startSpan(r.Context(), "rate_limit.replay")
+		defer span.End()
+
 		var req struct {
 			FromTs int64  `json:"from_ts"`
 			ToTs   int64  `json:"to_ts"`
 			Key    string `json:"key"`
 		}
 		json.NewDecoder(r.Body).Decode(&req)
-		events, err := lim.Replay(r.Context(), req.FromTs, req.ToTs)
+
+		span.SetAttributes(
+			attribute.Int64("from_ts", req.FromTs),
+			attribute.Int64("to_ts", req.ToTs),
+			attribute.String("key", req.Key),
+		)
+
+		events, err := lim.Replay(ctx, req.FromTs, req.ToTs)
 		if err != nil {
+			span.RecordError(err)
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
@@ -365,13 +427,19 @@ func main() {
 	})
 
 	r.Get("/v1/admin/inspect", func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := startSpan(r.Context(), "rate_limit.admin.inspect")
+		defer span.End()
 		k := r.URL.Query().Get("key")
-		st, _ := lim.Inspect(r.Context(), k)
+		span.SetAttributes(attribute.String("key", k))
+		st, _ := lim.Inspect(ctx, k)
 		writeJSON(w, 200, st)
 	})
 	r.Post("/v1/admin/reset", func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := startSpan(r.Context(), "rate_limit.admin.reset")
+		defer span.End()
 		k := r.URL.Query().Get("key")
-		lim.Reset(r.Context(), k)
+		span.SetAttributes(attribute.String("key", k))
+		lim.Reset(ctx, k)
 		writeJSON(w, 200, map[string]string{"reset":k})
 	})
 
@@ -575,15 +643,16 @@ func _ensureDist() fs.FS { return nil }
 
 // initTracer sets up a simple stdout trace exporter (synchronous for demo visibility).
 // Production: use WithBatcher + OTLP exporter, and call Shutdown on exit.
-func initTracer() {
+// Returns the TracerProvider (or nil) for shutdown.
+func initTracer() *trace.TracerProvider {
 	exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 	if err != nil {
 		slog.Warn("failed to init stdout trace exporter", "err", err)
-		return
+		return nil
 	}
 
 	tp := trace.NewTracerProvider(
-		trace.WithSyncer(exp), // immediate for development / demo
+		trace.WithSyncer(exp), // immediate for development / demo (easy to see spans)
 		trace.WithResource(resource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceName("rate-limiter-service"),
@@ -592,6 +661,7 @@ func initTracer() {
 	otel.SetTracerProvider(tp)
 
 	slog.Info("OpenTelemetry tracing initialized (stdout syncer)")
+	return tp
 }
 
 // helper to start a span in handlers (uses global tracer)
