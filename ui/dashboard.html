@@ -182,7 +182,7 @@
                         <span id="node-display">node-</span>
                     </div>
                 </div>
-                <div class="text-[10px] text-zinc-500 mt-0.5">Connected • <span id="backend-display">inmemory</span></div>
+                <div class="text-[10px] text-zinc-500 mt-0.5">Connected • <span id="backend-display">inmemory</span> • <span id="cluster-nodes-count">1</span> nodes</div>
             </div>
         </div>
 
@@ -292,6 +292,12 @@
                                     <i class="fa-solid fa-shield text-2xl text-rose-400"></i>
                                 </div>
                                 <div class="text-xs mt-3">↓ 0.4% from yesterday</div>
+                            </div>
+                            
+                            <div class="glass rounded-3xl p-5 col-span-1 md:col-span-3 lg:col-span-1">
+                                <div class="text-xs uppercase tracking-widest text-zinc-400">Cluster</div>
+                                <div class="text-3xl font-semibold mt-1"><span id="cluster-nodes-info">3</span></div>
+                                <div class="text-xs text-emerald-400 mt-1">All healthy • <span id="node-display-inline">node-xxx</span></div>
                             </div>
                         </div>
                         
@@ -1154,13 +1160,36 @@
             // etc.
         }
         
-        async function loadInitialData() {
-            // Set initial node info
+        async function fetchHealthAndUpdate() {
             try {
                 const health = await fetch('/health').then(r => r.json());
-                document.getElementById('node-display').textContent = health.node || 'node-default';
-                document.getElementById('backend-display').textContent = health.backend || 'inmemory';
+                const nodeEl = document.getElementById('node-display');
+                const backendEl = document.getElementById('backend-display');
+                if (nodeEl) nodeEl.textContent = health.node || 'node-default';
+                if (backendEl) backendEl.textContent = health.backend || 'inmemory';
+                
+                // Update overview cluster info if present
+                const clusterInfo = document.getElementById('cluster-nodes-info');
+                if (clusterInfo && health.cluster_nodes !== undefined) {
+                    clusterInfo.textContent = `${health.cluster_nodes} nodes`;
+                }
+            } catch(e) {
+                console.log('Health fetch (ok in demo)');
+            }
+            
+            try {
+                const nodesRes = await fetch('/v1/cluster/nodes').then(r => r.json());
+                const nodesEl = document.getElementById('cluster-nodes-count');
+                if (nodesEl && nodesRes.nodes) {
+                    nodesEl.textContent = nodesRes.nodes.length;
+                }
             } catch(e) {}
+        }
+
+        async function loadInitialData() {
+            // Live backend data from /health and cluster
+            fetchHealthAndUpdate();
+            setInterval(fetchHealthAndUpdate, 15000); // refresh every 15s
             
             // Load initial overview
             loadOverview();
