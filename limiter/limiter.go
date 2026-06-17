@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -204,4 +205,38 @@ func matchesPolicy(key string, labels map[string]string, p *Policy) bool {
 		return match
 	}
 	return false
+}
+
+// NamespaceKey is a helper for richer multi-tenant / namespace security.
+// It prefixes or validates keys using labels (e.g. tenant, user, env).
+// Usage in middleware or before Check:
+//   safeKey := limiter.NamespaceKey("tenant:acme", req.Labels["user"], req.Key)
+// This prevents cross-tenant key collisions when using shared limiter instances.
+func NamespaceKey(namespace string, labels map[string]string, key string) string {
+	if namespace == "" {
+		namespace = labels["tenant"]
+	}
+	if namespace == "" {
+		namespace = labels["namespace"]
+	}
+	if namespace == "" {
+		return key
+	}
+	// Avoid double prefix
+	if strings.HasPrefix(key, namespace+":") || strings.HasPrefix(key, namespace+"/") {
+		return key
+	}
+	return namespace + ":" + key
+}
+
+// ValidateKeyNamespace enforces that a key belongs to an allowed namespace.
+// Returns error if violation. Useful for admin or policy enforcement.
+func ValidateKeyNamespace(allowedNamespace string, key string) error {
+	if allowedNamespace == "" {
+		return nil
+	}
+	if !strings.HasPrefix(key, allowedNamespace+":") && !strings.HasPrefix(key, allowedNamespace+"/") {
+		return fmt.Errorf("key %q violates namespace %q", key, allowedNamespace)
+	}
+	return nil
 }

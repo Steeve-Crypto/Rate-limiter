@@ -24,18 +24,21 @@ Core of the ambitious plan is **largely complete**:
    - Easy to extend to OTLP (just change exporter).
    - See main.go and README. Resource includes service name.
 
-2. **Security Basics** (partial ✅)
-   - Simple `ADMIN_TOKEN` env + `X-Admin-Token` header protection on `/v1/admin/*` (implemented).
-   - mTLS examples and key namespace helpers still recommended (see UseCase.md).
-   - Extendable via the new `adminAuth` wrapper.
+2. **Security Basics + Richer Security** ✅ **IMPLEMENTED**
+   - Simple `ADMIN_TOKEN` + header protection (previous).
+   - Full mTLS + TLS support for gRPC via `-grpc-tls-*` flags (with credentials.NewTLS).
+   - `scripts/gen-grpc-certs.sh` to produce CA/server/client certs for mTLS demos.
+   - Key namespaces: `limiter.NamespaceKey(...)` and `ValidateKeyNamespace(...)` helpers in limiter package for tenant isolation.
+   - Documented in README.
    - Document in UseCase + README (fintech requires this).
    - Optional: rate-limit the rate-limiter itself on admin.
 
-3. **gRPC Reliability**
-   - Current: pb init panics on protobuf descriptor version skew → gRPC server disabled via build ignore + comments.
-   - Fix: Either (a) proper re-generation with pinned protoc versions matching go.mod, or (b) robust build tags + separate package, or (c) vendor descriptor fix.
-   - Re-enable server + update clients + add example gRPC usage.
-   - Expose on 8081 by default when enabled.
+3. **gRPC Reliability** ✅ **IMPLEMENTED**
+   - Regenerated pb files using current protoc + protoc-gen-go (matching protobuf v1.36 runtime).
+   - Removed build ignore tags from grpc.go.
+   - Re-enabled full gRPC listener + reflection on :port+1.
+   - No more init panics. Server starts cleanly.
+   - Also added optional TLS/mTLS flags.
 
 4. **Dashboard / SPA Serving Robustness**
    - Current serves `index.html` + `/assets/*` + `/favicon.svg` via custom fs handlers.

@@ -204,8 +204,12 @@ The legacy single-file dashboard.html is kept as fallback when no dist/ exists.
 
 - **OpenAPI + Generated Clients**: Full spec in `openapi.yaml`. Run `./scripts/generate-clients.sh python` (or typescript/go) to emit clients using openapi-generator.
 
-- **OpenTelemetry Tracing**: Initialized on startup (stdout exporter by default for demo). Spans are created for `rate_limit.check`, `visualize`, `simulate`, `replicate`, `replay`, `admin.*` with rich attributes (key, algorithm, allowed, etc.) and events. 
+- **OpenTelemetry Tracing**: Initialized on startup (stdout exporter by default for demo). Spans are created for `rate_limit.check`, `visualize`, `simulate`, `replicate`, `replay`, `admin.*`, `policies.*` with rich attributes (key, algorithm, allowed, etc.) and events. 
   Use an OTLP collector in production. See code in main.go: `initTracer()` + `startSpan()`. Context is propagated.
+
+- **Admin Security**: Set `ADMIN_TOKEN=...` env and send `X-Admin-Token` header to protect `/v1/admin/*` and sensitive ops. Easy to extend.
+- **gRPC TLS/mTLS**: Use `-grpc-tls-cert`, `-grpc-tls-key`, `-grpc-tls-ca` flags (or env equiv). See `scripts/gen-grpc-certs.sh` to generate certs for demo/production mTLS.
+- **Key Namespaces (richer security)**: Use `limiter.NamespaceKey("tenant:acme", labels, originalKey)` before checks to enforce isolation. `ValidateKeyNamespace` for admin enforcement. Prevents cross-tenant pollution in shared deployments (see UseCase.md for fintech/ multi-tenant examples).
 
 - **Official Go Client**: `client/client.go`
 - **Official Python Client**: `client/python/rate_limiter_client/` (zero-dep, or install via pyproject). See `client/python/README.md`.

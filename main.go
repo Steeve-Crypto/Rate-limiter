@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	// "net"   // gRPC disabled
+	"crypto/tls"
+	"crypto/x509"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,13 +19,15 @@ import (
 	"time"
 
 	"github.com/crypto/rate-limiter-service/limiter"
-	// pb import disabled (see limiter/grpc.go build ignore + regen note)
-	// "github.com/crypto/rate-limiter-service/limiter/pb"
+	"github.com/crypto/rate-limiter-service/limiter/pb"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	redis "github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	// google.golang.org/grpc disabled for now (pb descriptor issue)
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/reflection"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -55,6 +59,10 @@ func main() {
 		redisURL = flag.String("redis", "", "redis")
 		nodeID   = flag.String("node-id", "node-"+fmt.Sprintf("%d", time.Now().UnixNano()%10000), "node identifier for cluster")
 		twoTier  = flag.Bool("two-tier", false, "enable local fast-path + Redis reconciliation")
+		// gRPC mTLS / TLS
+		grpcTLSCert = flag.String("grpc-tls-cert", "", "path to server cert for gRPC TLS (enables TLS)")
+		grpcTLSKey  = flag.String("grpc-tls-key", "", "path to server key for gRPC TLS")
+		grpcTLSCA   = flag.String("grpc-tls-ca", "", "path to CA cert for gRPC mTLS client verification (optional)")
 	)
 	flag.Parse()
 
@@ -458,9 +466,55 @@ func main() {
 
 	slog.Info("server", "port", *port)
 
-	// Phase 7: gRPC support disabled temporarily (pb descriptor version skew).
-	// gRPC disabled (see comment above). HTTP + React dashboard fully working.
-	slog.Info("gRPC disabled temporarily (protobuf mismatch in generated pb); dashboard + all HTTP endpoints ready")
+	// Phase 7: gRPC support (parallel on port+1), with optional TLS/mTLS
+	go func() {
+		grpcAddr := fmt.Sprintf(":%d", *port+1)
+		lis, err := net.Listen("tcp", grpcAddr)
+		if err != nil {
+			slog.Error("gRPC listen failed", "err", err)
+			return
+		}
+
+		var opts []grpc.ServerOption
+		if *grpcTLSCert != "" && *grpcTLSKey != "" {
+			cert, err := tls.LoadX509KeyPair(*grpcTLSCert, *grpcTLSKey)
+			if err != nil {
+				slog.Error("failed to load gRPC TLS cert/key", "err", err)
+				return
+			}
+			tlsConfig := &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			}
+			if *grpcTLSCA != "" {
+				// mTLS: require and verify client cert
+				caCert, err := os.ReadFile(*grpcTLSCA)
+				if err != nil {
+					slog.Error("failed to load gRPC CA", "err", err)
+					return
+				}
+				certPool := x509.NewCertPool()
+				certPool.AppendCertsFromPEM(caCert)
+				tlsConfig.ClientCAs = certPool
+				tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+				slog.Info("gRPC mTLS enabled (client cert required)")
+			} else {
+				slog.Info("gRPC TLS enabled (no client cert required)")
+			}
+			creds := credentials.NewTLS(tlsConfig)
+			opts = append(opts, grpc.Creds(creds))
+		} else {
+			opts = append(opts, grpc.Creds(insecure.NewCredentials()))
+		}
+
+		grpcServer := grpc.NewServer(opts...)
+		pb.RegisterRateLimiterServer(grpcServer, limiter.NewGRPCServer(lim))
+		reflection.Register(grpcServer)
+		slog.Info("gRPC listening", "addr", grpcAddr, "tls", *grpcTLSCert != "")
+		if err := grpcServer.Serve(lis); err != nil {
+			slog.Error("gRPC serve error", "err", err)
+		}
+	}()
 
 	http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
 }
