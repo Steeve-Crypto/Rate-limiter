@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -342,10 +344,12 @@ func main() {
 		writeJSON(w, 200, map[string]string{"reset":k})
 	})
 
-	r.Get("/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		data, _ := uiFS.ReadFile("ui/dashboard.html")
-		w.Write(data)
+	// Serve the React framework dashboard (preferred). Falls back to legacy HTML dashboard.
+	r.Get("/dashboard", serveDashboard)
+
+	// Serve React build assets (Vite outputs /assets/* in index.html)
+	r.Get("/assets/*", func(w http.ResponseWriter, r *http.Request) {
+		serveReactAsset(w, r)
 	})
 
 	slog.Info("server", "port", *port)
@@ -463,3 +467,55 @@ func (t *twoTierLimiter) GetReplicatedState(key string) (interface{}, bool) {
 }
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+
+// serveDashboard prefers the built React SPA at frontend/dist. Otherwise serves the legacy single-file dashboard.
+func serveDashboard(w http.ResponseWriter, r *http.Request) {
+	distPath := "frontend/dist"
+	if fi, err := os.Stat(distPath); err == nil && fi.IsDir() {
+		indexPath := filepath.Join(distPath, "index.html")
+		if b, err := os.ReadFile(indexPath); err == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(b)
+			return
+		}
+	}
+	// fallback to legacy
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if data, err := uiFS.ReadFile("ui/dashboard.html"); err == nil {
+		w.Write(data)
+		return
+	}
+	http.Error(w, "dashboard unavailable", 503)
+}
+
+// serveReactAsset serves JS/CSS and other assets from the React build dir.
+func serveReactAsset(w http.ResponseWriter, r *http.Request) {
+	distPath := "frontend/dist"
+	assetPath := r.URL.Path // e.g. /assets/index-xxx.js
+	clean := filepath.Clean(assetPath)
+	full := filepath.Join(distPath, clean)
+	// security: ensure inside dist
+	if !isSubPath(distPath, full) {
+		http.Error(w, "forbidden", 403)
+		return
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	stat, _ := f.Stat()
+	http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
+}
+
+func isSubPath(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == ".." || len(rel) > 2 && rel[:3] == "../" {
+		return false
+	}
+	return true
+}
+
+// optional helper to copy built assets into embed dir at build time (omitted for simplicity)
+func _ensureDist() fs.FS { return nil }

@@ -1,14 +1,25 @@
 openapi: 3.0.0
 info:
-  title: Rate Limiter Service API
-  version: 1.0.0
-  description: Real-time rate limiting with policies, visualization, and replication.
+  title: RateFlow Rate Limiter Service API
+  version: 1.2.0
+  description: Real-time rate limiting (token bucket, sliding window, leaky bucket), policy engine, visualization, simulation, replication with conflict resolution, cluster awareness.
 servers:
   - url: http://localhost:8080
+    description: Local dev
 paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
   /v1/check:
     post:
-      summary: Check rate limit
+      summary: Check rate limit for a key
       requestBody:
         required: true
         content:
@@ -17,16 +28,57 @@ paths:
               $ref: '#/components/schemas/CheckRequest'
       responses:
         '200':
-          description: Allowed or rate limited
+          description: Request allowed
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CheckResponse'
         '429':
           description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckResponse'
   /v1/visualize:
     get:
-      summary: Get visualization for a key
+      summary: Get visualization and state for a key
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: algorithm
+          in: query
+          schema:
+            type: string
+            default: token_bucket
+        - name: max_tokens
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: window_seconds
+          in: query
+          schema:
+            type: integer
+            default: 60
+        - name: include_history
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, html]
+      responses:
+        '200':
+          description: Visualization data or HTML
+  /v1/visualize/stream:
+    get:
+      summary: Live SSE visualization stream
       parameters:
         - name: key
           in: query
@@ -35,14 +87,10 @@ paths:
             type: string
       responses:
         '200':
-          description: Visualization data
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Visualization'
+          description: text/event-stream
   /v1/simulate:
     post:
-      summary: Run simulation
+      summary: Run what-if simulation
       requestBody:
         content:
           application/json:
@@ -51,16 +99,129 @@ paths:
       responses:
         '200':
           description: Simulation results
+  /v1/policies:
+    get:
+      summary: List policies
+      responses:
+        '200':
+          description: List of policies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Policy'
+    post:
+      summary: Add or update a policy
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Policy'
+      responses:
+        '200':
+          description: Policy added
+  /v1/replicate:
+    post:
+      summary: Emit a replication event (for cross-node sync)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplicationEvent'
+      responses:
+        '200':
+          description: Emitted
+  /v1/replicated/{key}:
+    get:
+      summary: Get replicated state for key
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Replicated value
+  /v1/replay:
+    post:
+      summary: Replay decision events in time range
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayRequest'
+      responses:
+        '200':
+          description: Replay results
+  /v1/snapshot:
+    post:
+      summary: Create snapshot to file
+      parameters:
+        - name: dest
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Snapshot status
+  /v1/restore:
+    post:
+      summary: Restore from snapshot
+      parameters:
+        - name: src
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Restore status
+  /v1/admin/inspect:
+    get:
+      summary: Inspect state for key
+      parameters:
+        - name: key
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Internal state
+  /v1/admin/reset:
+    post:
+      summary: Reset state for key
+      parameters:
+        - name: key
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reset status
+  /v1/cluster/nodes:
+    get:
+      summary: List registered cluster nodes
+      responses:
+        '200':
+          description: Nodes
+  /v1/cluster/visualize:
+    get:
+      summary: Cluster-aware visualization
+      responses:
+        '200':
+          description: Viz + cluster info
 components:
   schemas:
     CheckRequest:
       type: object
+      required: [key]
       properties:
-        key: { type: string }
-        max_tokens: { type: integer }
-        window_seconds: { type: integer }
-        algorithm: { type: string }
-        cost: { type: integer }
+        key: { type: string, example: "user:42:api" }
+        max_tokens: { type: integer, default: 100 }
+        window_seconds: { type: integer, default: 60 }
+        algorithm: { type: string, enum: [token_bucket, sliding_window, leaky_bucket], default: token_bucket }
+        cost: { type: integer, default: 1 }
         labels: { type: object, additionalProperties: { type: string } }
     CheckResponse:
       type: object
@@ -68,7 +229,7 @@ components:
         allowed: { type: boolean }
         remaining: { type: integer }
         limit: { type: integer }
-        retry_after_ms: { type: integer }
+        retry_after_ms: { type: integer, nullable: true }
         reset_at: { type: integer }
         algorithm: { type: string }
     Visualization:
@@ -88,3 +249,38 @@ components:
         costs:
           type: array
           items: { type: integer }
+    Policy:
+      type: object
+      properties:
+        name: { type: string }
+        pattern: { type: string, example: "api:*" }
+        labels: { type: object, additionalProperties: { type: string } }
+        config:
+          type: object
+          properties:
+            algorithm: { type: string }
+            max_tokens: { type: integer }
+            window_seconds: { type: integer }
+        priority: { type: integer }
+    ReplicationEvent:
+      type: object
+      properties:
+        op: { type: string, example: "upsert" }
+        key: { type: string }
+        value: { type: object }
+        version: { type: integer }
+        node: { type: string }
+        ts: { type: integer }
+    ReplayRequest:
+      type: object
+      properties:
+        from_ts: { type: integer }
+        to_ts: { type: integer }
+        key: { type: string }
+    HealthResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+        backend: { type: string }
+        node: { type: string }
+        cluster_nodes: { type: integer }

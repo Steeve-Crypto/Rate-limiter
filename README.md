@@ -168,18 +168,27 @@ See [UseCase.md](./UseCase.md) for real-world use cases and [plan.md](./plan.md)
 
 - **gRPC Support**: gRPC server runs on `port+1` (e.g. 8081). See `limiter/grpc.go` for service interface. Use standard gRPC clients or reflection for now. Full .proto can be added easily.
 
-## Beautiful Control Center UI
+## Beautiful Control Center UI (React Framework)
 
-Visit `http://localhost:8080/dashboard` for the completely redesigned, creative, and highly organized web UI.
+Visit `http://localhost:8080/dashboard` — served by the full **React + Vite + Tailwind + Recharts** dashboard in `frontend/`.
 
-Features:
-- Sidebar navigation with multiple professional sections
-- Live SSE-powered visualizer with beautiful diagram rendering
-- Full policy management, replication tools, cluster view
-- Tester, simulator, replay explorer, admin tools
-- Modern Tailwind dark theme with status indicators and metrics
+### Key features
+- Persistent **Recent Results Log** panel (right sidebar) collecting actions across all tabs with live filter
+- Export log to **JSON** and **CSV**
+- Premium charts (distribution pie, activity line/bar) driven by actual results
+- All major endpoints wired: Check, Visualize + Live SSE, Simulate, Policies, Replication, Cluster, Replay, Admin
+- Results shown inline with color-coded cards, progress, and full backend polling (health + cluster every 15s)
+- Tabbed professional layout — no more raw HTML
 
-The UI has been significantly improved to feel like a true operations-grade control plane.
+### Development (framework dashboard)
+```bash
+cd frontend
+npm install
+npm run dev          # http://localhost:5173 (proxies to Go on :8080)
+npm run build        # produces dist/ — served automatically by Go at /dashboard
+```
+
+The legacy single-file dashboard.html is kept as fallback when no dist/ exists.
 
 - **Middleware**:
   - `middleware/chi.go`: Ready-to-use chi middleware.
@@ -193,20 +202,20 @@ The UI has been significantly improved to feel like a true operations-grade cont
 
 - **hool-freelance Integration**: See example Python client below (or call HTTP directly from Python).
 
-- **OpenAPI**: The endpoints follow simple JSON contracts. Use `go generate` or tools like swag for full spec in future.
+- **OpenAPI + Generated Clients**: Full spec in `openapi.yaml`. Run `./scripts/generate-clients.sh python` (or typescript/go) to emit clients using openapi-generator.
 
-- **Module**: Ready as `github.com/crypto/rate-limiter-service`. `go get` it for client.
+- **Official Go Client**: `client/client.go`
+- **Official Python Client**: `client/python/rate_limiter_client/` (zero-dep, or install via pyproject). See `client/python/README.md`.
+- Also manual thin client for hool-freelance or quick use.
 
-### Python Client Example (for hool-freelance or other)
 ```python
-import requests
-def check_rate(key, max_tokens=100, window=60):
-    r = requests.post("http://rate-limiter:8080/v1/check", json={
-        "key": key, "max_tokens": max_tokens, "window_seconds": window
-    })
-    return r.json()["allowed"]
-# Use in rate limit logic
+from rate_limiter_client import RateLimiterClient
+c = RateLimiterClient("http://localhost:8080")
+resp = c.check("user:42:api", max_tokens=100)
+print(resp.allowed, resp.remaining)
 ```
+
+Full generated clients available for Python / TS / others from OpenAPI.
 
 ### Kubernetes Sidecar
 ```yaml
