@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"net"
+	// "net"   // gRPC disabled
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,13 +16,13 @@ import (
 	"time"
 
 	"github.com/crypto/rate-limiter-service/limiter"
-	"github.com/crypto/rate-limiter-service/limiter/pb"
+	// pb import disabled (see limiter/grpc.go build ignore + regen note)
+	// "github.com/crypto/rate-limiter-service/limiter/pb"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	redis "github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
+	// google.golang.org/grpc disabled for now (pb descriptor issue)
 )
 
 //go:embed ui/*
@@ -124,6 +124,7 @@ func main() {
 		if req.MaxTokens == 0 { req.MaxTokens=100 }
 		if req.WindowSeconds==0 { req.WindowSeconds=60 }
 		if req.Cost==0 { req.Cost=1 }
+		if req.Algorithm == "" { req.Algorithm = "token_bucket" }
 
 		// Phase 3: resolve policy if not fully specified
 		if cfg, ok := policyEngine.Resolve(req.Key, req.Labels); ok {
@@ -345,6 +346,7 @@ func main() {
 	})
 
 	// Serve the React framework dashboard (preferred). Falls back to legacy HTML dashboard.
+	slog.Info("registering dashboard route")
 	r.Get("/dashboard", serveDashboard)
 
 	// Serve React build assets (Vite outputs /assets/* in index.html)
@@ -354,22 +356,9 @@ func main() {
 
 	slog.Info("server", "port", *port)
 
-	// Phase 7: gRPC support (parallel on port+1)
-	go func() {
-		grpcAddr := fmt.Sprintf(":%d", *port+1)
-		lis, err := net.Listen("tcp", grpcAddr)
-		if err != nil {
-			slog.Error("gRPC listen failed", "err", err)
-			return
-		}
-		grpcServer := grpc.NewServer()
-		pb.RegisterRateLimiterServer(grpcServer, limiter.NewGRPCServer(lim))
-		reflection.Register(grpcServer)
-		slog.Info("gRPC listening", "addr", grpcAddr)
-		if err := grpcServer.Serve(lis); err != nil {
-			slog.Error("gRPC serve error", "err", err)
-		}
-	}()
+	// Phase 7: gRPC support disabled temporarily (pb descriptor version skew).
+	// gRPC disabled (see comment above). HTTP + React dashboard fully working.
+	slog.Info("gRPC disabled temporarily (protobuf mismatch in generated pb); dashboard + all HTTP endpoints ready")
 
 	http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
 }

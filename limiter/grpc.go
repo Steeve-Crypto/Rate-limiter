@@ -1,3 +1,10 @@
+//go:build ignore
+// +build ignore
+
+// NOTE: gRPC pb generated files have protobuf descriptor version mismatch causing init panic.
+// Re-enable by removing these lines + regen pb with matching protoc once available.
+// The HTTP API + dashboard remain fully functional.
+
 package limiter
 
 import (
