@@ -560,10 +560,13 @@
                                 <span>Recent Results Log</span>
                             </div>
                             <div class="flex gap-1">
-                                <button onclick="exportLog('json')" class="text-[10px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1">
+                                <button onclick="clearLog()" class="text-[10px] px-2 py-0.5 bg-zinc-700 hover:bg-zinc-600 rounded text-zinc-400 flex items-center gap-1" title="Clear log">
+                                    <i class="fa-solid fa-trash fa-xs"></i>
+                                </button>
+                                <button onclick="exportLog('json')" class="text-[10px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1" title="Export JSON">
                                     <i class="fa-solid fa-download fa-xs"></i> JSON
                                 </button>
-                                <button onclick="exportLog('csv')" class="text-[10px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1">
+                                <button onclick="exportLog('csv')" class="text-[10px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1" title="Export CSV">
                                     <i class="fa-solid fa-download fa-xs"></i> CSV
                                 </button>
                             </div>
@@ -571,6 +574,9 @@
                         <div class="text-[10px] text-zinc-500">Actions across all tabs • Auto-updates</div>
                     </div>
                     
+                    <div class="p-2 border-b border-zinc-800">
+                        <input id="log-search" type="text" placeholder="Filter log..." onkeyup="filterLog()" class="w-full bg-zinc-800 text-xs px-2 py-1 rounded-xl border border-zinc-700 focus:outline-none">
+                    </div>
                     <div class="flex-1 overflow-auto p-3 space-y-2 text-xs" id="results-log">
                         <!-- Populated by JS -->
                         <div class="text-zinc-500 italic px-2">No actions yet. Perform checks or simulations.</div>
@@ -688,6 +694,35 @@
             
             // Log the export action
             logResult('export', `Exported log as ${format.toUpperCase()}`);
+        }
+
+        function clearLog() {
+            recentResults = [];
+            document.getElementById('results-log').innerHTML = '<div class="text-zinc-500 italic px-2">Log cleared.</div>';
+            // reset charts
+            allowedCount = 0;
+            limitedCount = 0;
+            activityData = [];
+            if (checksChart) {
+                checksChart.data.datasets[0].data = [0,0];
+                checksChart.update();
+            }
+            if (activityChart) {
+                activityChart.data.datasets[0].data = [];
+                activityChart.update();
+            }
+        }
+
+        function filterLog() {
+            const search = document.getElementById('log-search').value.toLowerCase();
+            const logItems = document.getElementById('results-log').children;
+            for (let item of logItems) {
+                if (item.textContent.toLowerCase().includes(search)) {
+                    item.style.display = '';
+                } else {
+                    item.style.display = 'none';
+                }
+            }
         }
         
         function updateCharts(type, details) {
