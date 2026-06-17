@@ -1,0 +1,350 @@
+package limiter
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// InMemoryLimiter implements Limiter using local memory (very low latency).
+// Suitable for single-instance or as a fast local cache layer.
+type InMemoryLimiter struct {
+	mu sync.RWMutex
+
+	// token bucket state
+	tb map[string]*tbState
+
+	// sliding window: store recent event times (unix milli) per key.
+	// We keep them sorted for easy window trimming.
+	sw map[string][]int64
+}
+
+type tbState struct {
+	tokens     float64
+	lastRefill int64 // unix milli
+}
+
+func NewInMemoryLimiter() *InMemoryLimiter {
+	return &InMemoryLimiter{
+		tb: make(map[string]*tbState),
+		sw: make(map[string][]int64),
+	}
+}
+
+func (m *InMemoryLimiter) Check(ctx context.Context, req CheckRequest) (*CheckResponse, error) {
+	start := time.Now()
+	defer func() {
+		// Note: allowed is set after, so we record after switch or use a wrapper.
+		// For simplicity, we'll update after in each path or record generic here.
+		CheckDuration.WithLabelValues(string(req.Algorithm), "inmemory").Observe(time.Since(start).Seconds())
+	}()
+
+	if req.Cost == 0 {
+		req.Cost = 1
+	}
+	if req.MaxTokens == 0 || req.WindowSeconds == 0 {
+		return nil, fmt.Errorf("max_tokens and window_seconds must be > 0")
+	}
+
+	var resp *CheckResponse
+	switch req.Algorithm {
+	case TokenBucket:
+		resp = m.checkTokenBucket(req)
+	case SlidingWindow:
+		resp = m.checkSlidingWindow(req)
+	default:
+		return nil, fmt.Errorf("unknown algorithm: %s", req.Algorithm)
+	}
+
+	allowedStr := "false"
+	if resp.Allowed {
+		allowedStr = "true"
+	}
+	ChecksTotal.WithLabelValues(string(req.Algorithm), allowedStr).Inc()
+
+	return resp, nil
+}
+
+func (m *InMemoryLimiter) checkTokenBucket(req CheckRequest) *CheckResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := nowUnixMilli()
+	windowMs := int64(req.WindowSeconds) * 1000
+	ratePerMs := float64(req.MaxTokens) / float64(windowMs)
+
+	state, ok := m.tb[req.Key]
+	if !ok {
+		state = &tbState{tokens: float64(req.MaxTokens), lastRefill: now}
+		m.tb[req.Key] = state
+	}
+
+	// Refill
+	elapsed := float64(now - state.lastRefill)
+	add := elapsed * ratePerMs
+	state.tokens = minFloat(state.tokens+add, float64(req.MaxTokens))
+	state.lastRefill = now
+
+	allowed := state.tokens >= float64(req.Cost)
+	if allowed {
+		state.tokens -= float64(req.Cost)
+	}
+
+	remaining := uint32(state.tokens)
+	if remaining > req.MaxTokens {
+		remaining = req.MaxTokens
+	}
+
+	resp := &CheckResponse{
+		Allowed:   allowed,
+		Remaining: remaining,
+		Limit:     req.MaxTokens,
+		ResetAt:   nowUnix() + int64(req.WindowSeconds),
+		Algorithm: TokenBucket,
+	}
+
+	if !allowed {
+		needed := float64(req.Cost) - state.tokens
+		retryMs := int64(0)
+		if ratePerMs > 0 {
+			retryMs = int64(needed / ratePerMs)
+		} else {
+			retryMs = windowMs
+		}
+		resp.RetryAfterMs = &retryMs
+	}
+	return resp
+}
+
+func (m *InMemoryLimiter) checkSlidingWindow(req CheckRequest) *CheckResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := nowUnixMilli()
+	windowMs := int64(req.WindowSeconds) * 1000
+	cutoff := now - windowMs
+
+	events := m.sw[req.Key]
+	// trim old
+	idx := sort.Search(len(events), func(i int) bool { return events[i] > cutoff })
+	events = events[idx:]
+
+	// count current
+	count := len(events)
+	allowed := uint32(count)+req.Cost <= req.MaxTokens
+
+	if allowed {
+		for i := uint32(0); i < req.Cost; i++ {
+			events = append(events, now+int64(i)) // slight spread for same-ms cost>1
+		}
+		sort.Slice(events, func(i, j int) bool { return events[i] < events[j] })
+		m.sw[req.Key] = events
+	} else {
+		m.sw[req.Key] = events // still store trimmed
+	}
+
+	remaining := req.MaxTokens
+	if uint32(count) < req.MaxTokens {
+		remaining = req.MaxTokens - uint32(count)
+	}
+	if !allowed {
+		remaining = 0
+	}
+
+	resp := &CheckResponse{
+		Allowed:   allowed,
+		Remaining: remaining,
+		Limit:     req.MaxTokens,
+		ResetAt:   nowUnix() + int64(req.WindowSeconds),
+		Algorithm: SlidingWindow,
+	}
+
+	if !allowed && len(events) > 0 {
+		oldest := events[0]
+		retry := oldest + windowMs - now
+		if retry < 1 {
+			retry = 1
+		}
+		resp.RetryAfterMs = &retry
+	}
+	return resp
+}
+
+// === VISUALIZE IMPLEMENTATION ===
+
+func (m *InMemoryLimiter) Visualize(ctx context.Context, key string, algo Algorithm, maxTokens, windowSeconds uint32) (*Visualization, error) {
+	start := time.Now()
+	defer func() {
+		VisualizeDuration.WithLabelValues(string(algo), "inmemory").Observe(time.Since(start).Seconds())
+		VisualizeTotal.WithLabelValues(string(algo)).Inc()
+	}()
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	switch algo {
+	case TokenBucket:
+		return m.visualizeTokenBucket(key, maxTokens, windowSeconds), nil
+	case SlidingWindow:
+		return m.visualizeSlidingWindow(key, maxTokens, windowSeconds), nil
+	default:
+		return nil, fmt.Errorf("unknown algorithm: %s", algo)
+	}
+}
+
+func (m *InMemoryLimiter) visualizeTokenBucket(key string, maxTokens, windowSeconds uint32) *Visualization {
+	state, ok := m.tb[key]
+	now := nowUnixMilli()
+
+	var tokens float64 = float64(maxTokens)
+	lastMs := now
+	if ok {
+		tokens = state.tokens
+		lastMs = state.lastRefill
+	}
+
+	windowMs := int64(windowSeconds) * 1000
+	ratePerSec := float64(maxTokens) / float64(windowSeconds)
+
+	elapsed := now - lastMs
+	refilled := float64(elapsed) * (float64(maxTokens) / float64(windowMs))
+	current := minFloat(tokens+refilled, float64(maxTokens))
+
+	percent := 0.0
+	if maxTokens > 0 {
+		percent = (current / float64(maxTokens)) * 100
+	}
+
+	bar := renderBar(current, float64(maxTokens), 30)
+
+	stateMap := map[string]any{
+		"current_tokens": fmt.Sprintf("%.2f", current),
+		"max_tokens":     maxTokens,
+		"rate_per_sec":   fmt.Sprintf("%.2f", ratePerSec),
+		"last_refill_ms": lastMs,
+		"elapsed_ms":     elapsed,
+	}
+
+	diagram := fmt.Sprintf(`Token Bucket [%s]
+Capacity : %d
+Current  : %.1f
+Rate     : %.2f tokens/sec
+Last fill: %d ms ago
+
+%s  %.1f%%`, key, maxTokens, current, ratePerSec, elapsed, bar, percent)
+
+	return &Visualization{
+		Algorithm: string(TokenBucket),
+		Key:       key,
+		State:     stateMap,
+		Diagram:   diagram,
+	}
+}
+
+func (m *InMemoryLimiter) visualizeSlidingWindow(key string, maxTokens, windowSeconds uint32) *Visualization {
+	now := nowUnixMilli()
+	windowMs := int64(windowSeconds) * 1000
+	cutoff := now - windowMs
+
+	events := m.sw[key]
+	idx := sort.Search(len(events), func(i int) bool { return events[i] > cutoff })
+	events = events[idx:]
+
+	count := len(events)
+	percent := 0.0
+	if maxTokens > 0 {
+		percent = (float64(count) / float64(maxTokens)) * 100
+	}
+
+	bar := renderBar(float64(count), float64(maxTokens), 30)
+
+	// Build a simple recent timeline (last 8 events)
+	var recent []string
+	for i := len(events) - 1; i >= 0 && len(recent) < 8; i-- {
+		age := (now - events[i]) / 1000
+		recent = append(recent, fmt.Sprintf("-%ds", age))
+	}
+	sort.Strings(recent) // rough
+
+	stateMap := map[string]any{
+		"requests_in_window": count,
+		"max_tokens":         maxTokens,
+		"window_seconds":     windowSeconds,
+		"events_sample":      events,
+	}
+
+	diagram := fmt.Sprintf(`Sliding Window [%s]
+Window   : %ds
+In window: %d / %d
+Usage    : %.1f%%
+
+%s
+
+Recent events (age): %s`, key, windowSeconds, count, maxTokens, percent, bar, strings.Join(recent, " "))
+
+	return &Visualization{
+		Algorithm: string(SlidingWindow),
+		Key:       key,
+		State:     stateMap,
+		Diagram:   diagram,
+	}
+}
+
+// Reset clears all state for a key (both token bucket and sliding window).
+func (m *InMemoryLimiter) Reset(ctx context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.tb, key)
+	delete(m.sw, key)
+	return nil
+}
+
+// Inspect returns raw internal state for debugging.
+func (m *InMemoryLimiter) Inspect(ctx context.Context, key string) (map[string]any, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := map[string]any{
+		"key": key,
+	}
+
+	if tb, ok := m.tb[key]; ok {
+		result["token_bucket"] = map[string]any{
+			"tokens":       tb.tokens,
+			"last_refill":  tb.lastRefill,
+		}
+	}
+
+	if events, ok := m.sw[key]; ok {
+		result["sliding_window"] = map[string]any{
+			"events_count": len(events),
+			"events":       events,
+		}
+	}
+
+	return result, nil
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func renderBar(current, max float64, width int) string {
+	if max <= 0 {
+		return "[" + strings.Repeat(" ", width) + "]"
+	}
+	filled := int((current / max) * float64(width))
+	if filled > width {
+		filled = width
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
+}
