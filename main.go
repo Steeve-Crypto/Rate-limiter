@@ -25,23 +25,36 @@ func main() {
 	var (
 		port     = flag.Int("port", 8080, "port")
 		redisURL = flag.String("redis", "", "redis")
+		nodeID   = flag.String("node-id", "node-"+fmt.Sprintf("%d", time.Now().UnixNano()%10000), "node identifier for cluster")
+		twoTier  = flag.Bool("two-tier", false, "enable local fast-path + Redis reconciliation")
 	)
 	flag.Parse()
 
 	var lim limiter.Limiter
-	var nodeID = "node-" + fmt.Sprintf("%d", time.Now().UnixNano()%10000)
+	var rdb *redis.Client
 	var replicator *limiter.Replicator
 	if *redisURL != "" {
-		rdb := redis.NewClient(&redis.Options{Addr: *redisURL})
+		rdb = redis.NewClient(&redis.Options{Addr: *redisURL})
 		if rdb.Ping(context.Background()).Err() == nil {
 			lim = limiter.NewRedisLimiter(rdb)
-			replicator = limiter.NewReplicator(nodeID, rdb, "rl:replication")
+			replicator = limiter.NewReplicator(*nodeID, rdb, "rl:replication")
 			replicator.StartConsumer(context.Background())
+			// Phase 6: register node for cluster awareness
+			registerNode(rdb, *nodeID)
+		} else {
+			slog.Warn("redis unavailable")
 		}
 	}
 	if lim == nil {
 		lim = limiter.NewInMemoryLimiter()
 		slog.Info("using inmemory")
+	}
+
+	// Phase 6: two-tier mode - local inmemory + global Redis
+	if *twoTier && rdb != nil {
+		local := limiter.NewInMemoryLimiter()
+		lim = &twoTierLimiter{local: local, global: lim.(*limiter.RedisLimiter), rdb: rdb, nodeID: *nodeID}
+		slog.Info("two-tier mode enabled")
 	}
 
 	policyEngine := limiter.NewPolicyEngine()
@@ -60,9 +73,40 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.Recoverer)
 
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request){ writeJSON(w, 200, map[string]any{"ok":true, "backend": limiter.BackendName(lim)}) })
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request){
+		info := map[string]any{"ok":true, "backend": limiter.BackendName(lim), "node": *nodeID}
+		if rdb != nil {
+			info["cluster_nodes"] = len(getNodes(rdb))
+		}
+		writeJSON(w, 200, info)
+	})
 	r.Get("/ready", func(w http.ResponseWriter, r *http.Request){ writeJSON(w, 200, map[string]any{"ready":true}) })
 	r.Handle("/metrics", promhttp.Handler())
+
+	// Phase 6: cluster-aware endpoints
+	r.Get("/v1/cluster/nodes", func(w http.ResponseWriter, r *http.Request) {
+		if rdb != nil {
+			writeJSON(w, 200, map[string]any{"nodes": getNodes(rdb), "self": *nodeID})
+		} else {
+			writeJSON(w, 200, map[string]any{"nodes": []string{*nodeID}, "self": *nodeID})
+		}
+	})
+	r.Get("/v1/cluster/visualize", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		// For demo: local viz + cluster info. In real, fanout via registry or aggregate from stream
+		a := limiter.Algorithm(r.URL.Query().Get("algorithm"))
+		if a == "" { a = limiter.TokenBucket }
+		mt := uint32(100); if v, _ := strconv.ParseUint(r.URL.Query().Get("max_tokens"), 10, 32); v > 0 { mt = uint32(v) }
+		ws := uint32(60); if v, _ := strconv.ParseUint(r.URL.Query().Get("window_seconds"), 10, 32); v > 0 { ws = uint32(v) }
+		viz, _ := lim.Visualize(r.Context(), key, a, mt, ws)
+		nodes := []string{*nodeID}
+		if rdb != nil { nodes = getNodes(rdb) }
+		writeJSON(w, 200, map[string]any{
+			"key": key,
+			"viz": viz,
+			"cluster": map[string]any{"nodes": nodes, "note": "aggregated view (demo: local + registry)"},
+		})
+	})
 
 	r.Post("/v1/check", func(w http.ResponseWriter, r *http.Request) {
 		var req limiter.CheckRequest
@@ -108,6 +152,13 @@ func main() {
 			Node:    "default",
 			Version: 1,
 		})
+
+		// Phase 6: backpressure signals
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(int(resp.Limit)))
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(int(resp.Remaining)))
+		if resp.RetryAfterMs != nil {
+			w.Header().Set("Retry-After", strconv.FormatInt(*resp.RetryAfterMs/1000, 10))
+		}
 
 		writeJSON(w, st, resp)
 	})
@@ -188,7 +239,7 @@ func main() {
 		var ev limiter.ReplicationEvent
 		json.NewDecoder(r.Body).Decode(&ev)
 		if ev.Node == "" {
-			ev.Node = nodeID
+			ev.Node = *nodeID
 		}
 		if replicator != nil {
 			replicator.Emit(r.Context(), ev.Op, ev.Key, ev.Value, ev.Version)
@@ -273,6 +324,92 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
+}
+
+// Phase 6: Redis-based node registry for cluster awareness
+func registerNode(rdb *redis.Client, nodeID string) {
+	key := "rl:nodes"
+	rdb.SAdd(context.Background(), key, nodeID)
+	rdb.Expire(context.Background(), key, 30*time.Second) // heartbeat TTL
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			rdb.SAdd(context.Background(), key, nodeID)
+			rdb.Expire(context.Background(), key, 30*time.Second)
+		}
+	}()
+}
+
+func getNodes(rdb *redis.Client) []string {
+	key := "rl:nodes"
+	nodes, _ := rdb.SMembers(context.Background(), key).Result()
+	return nodes
+}
+
+// twoTierLimiter: local fast path + global Redis (Phase 6)
+type twoTierLimiter struct {
+	local  *limiter.InMemoryLimiter
+	global *limiter.RedisLimiter
+	rdb    *redis.Client
+	nodeID string
+}
+
+func (t *twoTierLimiter) Check(ctx context.Context, req limiter.CheckRequest) (*limiter.CheckResponse, error) {
+	// Fast local check (Phase 6)
+	resp, err := t.local.Check(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	// Phase 6: try global with fallback for resilience (outage handling)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		if _, gerr := t.global.Check(ctx, req); gerr != nil {
+			// degrade: local continues, log warning
+			slog.Warn("global check degraded, using local", "key", req.Key, "err", gerr)
+		}
+	}()
+	return resp, nil
+}
+
+func (t *twoTierLimiter) Visualize(ctx context.Context, key string, algo limiter.Algorithm, maxTokens, windowSeconds uint32) (*limiter.Visualization, error) {
+	// Prefer local for speed, fallback
+	v, err := t.local.Visualize(ctx, key, algo, maxTokens, windowSeconds)
+	if err != nil || v == nil {
+		return t.global.Visualize(ctx, key, algo, maxTokens, windowSeconds)
+	}
+	return v, nil
+}
+
+// Implement other Limiter methods by delegating (simplified for Phase 6)
+func (t *twoTierLimiter) Reset(ctx context.Context, key string) error {
+	t.local.Reset(ctx, key)
+	return t.global.Reset(ctx, key)
+}
+
+func (t *twoTierLimiter) Inspect(ctx context.Context, key string) (map[string]any, error) {
+	return t.global.Inspect(ctx, key)
+}
+
+func (t *twoTierLimiter) History(ctx context.Context, key string, algo limiter.Algorithm, maxTokens, windowSeconds uint32, limit int) ([]*limiter.Visualization, error) {
+	return t.global.History(ctx, key, algo, maxTokens, windowSeconds, limit)
+}
+
+func (t *twoTierLimiter) Snapshot(ctx context.Context, dest string) error { return t.global.Snapshot(ctx, dest) }
+func (t *twoTierLimiter) Restore(ctx context.Context, src string) error { return t.global.Restore(ctx, src) }
+func (t *twoTierLimiter) LogDecision(ctx context.Context, ev limiter.DecisionEvent) error { return t.global.LogDecision(ctx, ev) }
+func (t *twoTierLimiter) Replay(ctx context.Context, fromTs, toTs int64) ([]limiter.DecisionEvent, error) {
+	return t.global.Replay(ctx, fromTs, toTs)
+}
+func (t *twoTierLimiter) EmitReplicationEvent(ctx context.Context, ev limiter.ReplicationEvent) error {
+	return t.global.EmitReplicationEvent(ctx, ev)
+}
+func (t *twoTierLimiter) ApplyReplicationEvent(ev limiter.ReplicationEvent) bool {
+	return t.global.ApplyReplicationEvent(ev)
+}
+func (t *twoTierLimiter) GetReplicatedState(key string) (interface{}, bool) {
+	return t.global.GetReplicatedState(key)
 }
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }

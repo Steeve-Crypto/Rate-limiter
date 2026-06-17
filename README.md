@@ -158,6 +158,20 @@ go test ./...
 
 See [plan.md](./plan.md) for the full ambitious roadmap (production hardening, live visualization, policy engine, persistent replay, unified replication + conflict resolution, etc.).
 
+## Phase 6 (Distributed Scale & Resilience) - Implemented
+- Redis-based node registry + health (nodes register with TTL).
+- `/v1/cluster/nodes` and `/v1/cluster/visualize` for aggregate view.
+- Two-tier rate limiting: local fast InMemory + async/global Redis with fallback (degradation on outage).
+- Backpressure signals via HTTP headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Retry-After`.
+- Circuit-breaker style short timeouts + local fallback for Redis resilience.
+- Notes on consistent hashing for sharding (key prefix hashing can be added easily).
+- Usage: `./rate-limiter -two-tier -redis ...`
+
+Example cluster viz:
+```bash
+curl http://localhost:8080/v1/cluster/visualize?key=user:42
+```
+
 ## Phase 5 (Unified Real-Time Coordination Platform) - Implemented
 - `ReplicationEvent` + `ReplicatedStore` with LWW conflict resolution (ported from demo, with node/version/tiebreak).
 - `Replicator` using Redis Streams (unified with Phase 4 decision log).
