@@ -152,7 +152,7 @@ Use the dashboard for quick exploration of visualization, simulation, and polici
 
 ### Step 2: Choose and Configure Algorithms + Policies for Your Use Case
 - **Social/Messaging (spam prevention during virality)**: Use `leaky_bucket` for smooth rate (e.g., 10 posts/min per user). Labels: `{"user_id": "123", "action": "post"}`. Hierarchical: global cap + per-user.
-- **Fintech/Payments (fraud/transaction limits)**: `token_bucket` for bursts + `sliding_window` for velocity (e.g., 5 tx/hour). Labels: `{"user_id": "u123", "tier": "verified", "risk": "low"}`. Policies per KYC tier.
+- **Fintech/Payments (fraud/transaction limits)**: `token_bucket` for bursts + `sliding_window` for velocity (e.g., 5 tx/hour). Labels: `{"user_id": "u123", "tier": "verified", "risk": "low"}`. Policies per KYC tier. Full start-to-finish below.
 - **Gaming/Live (action/chat limits under load)**: `token_bucket` for player actions (50 moves/min). Replication for shared state (e.g., scores). Two-tier for low-latency edge decisions.
 - **IoT/Analytics (telemetry ingestion)**: `sliding_window` for device streams (100 events/min/device). Labels: `{"device_id": "d456", "type": "sensor"}`. Pair with anomaly detection via visualization.
 
@@ -227,6 +227,121 @@ Example: In gaming, replicate "player_action_count" and visualize per-shard load
 3. Monitor via dashboard; simulate "double limits for 1hr".
 4. Replicate usage for billing across regions.
 5. On spike: visualize shows hot users; replay incident.
+
+### Detailed Adaptation for Fintech Transactions (Velocity Checks, Fraud Prevention, Compliance)
+
+Fintech requires strict velocity limiting (e.g., max transfers per hour/day per user), risk-based tiers, audit trails, and multi-region consistency to prevent fraud and meet regulations (AML/KYC).
+
+**Key Adaptations**:
+- **Algorithms**: `sliding_window` for precise velocity (e.g., 5 tx per hour). `token_bucket` for allowing small bursts. `leaky_bucket` for smoothing high-risk flows.
+- **Policies**: Hierarchical (global daily cap > per-user velocity > risk-tier). Labels: `{"user_id": "u123", "action": "transfer", "risk": "high", "kyc": "verified"}`.
+- **Replication**: Replicate daily/ hourly counters across regions for consistent global limits (LWW on user counters).
+- **Observability**: Full event log for audits. Dashboard for real-time hot accounts. Simulation for "what if we add 2FA requirement?".
+- **Two-tier**: Low-latency local checks at payment gateway edge + global Redis for shared state.
+- **Simulation/Replay**: Critical for testing policy changes without risking live transactions. Replay for forensic analysis of fraud events.
+
+#### Step-by-Step from Start to Finish
+
+1. **Setup the Service** (same as general):
+   - Clone, build as above.
+   - Run with Redis + two-tier for production fintech: `./rate-limiter -port 8080 -redis redis-cluster:6379 -two-tier -node-id payment-us-east`
+   - This enables atomic counters (Redis Lua), local fast path, and event streaming.
+
+2. **Define Fintech-Specific Policies**:
+   Example policies (via `/v1/policies` or dashboard):
+
+   ```json
+   {
+     "name": "transfer-velocity-verified",
+     "pattern": "*",
+     "labels": {"action": "transfer", "kyc": "verified", "risk": "low"},
+     "config": {"algorithm": "sliding_window", "max_tokens": 5, "window_seconds": 3600},
+     "priority": 100
+   }
+   ```
+
+   ```json
+   {
+     "name": "daily-global-cap",
+     "pattern": "*",
+     "labels": {"action": "transfer"},
+     "config": {"algorithm": "token_bucket", "max_tokens": 50, "window_seconds": 86400},
+     "priority": 50
+   }
+   ```
+
+   ```json
+   {
+     "name": "high-risk-strict",
+     "pattern": "*",
+     "labels": {"action": "transfer", "risk": "high"},
+     "config": {"algorithm": "leaky_bucket", "max_tokens": 2, "window_seconds": 3600},
+     "priority": 200
+   }
+   ```
+
+   - Hierarchical: Daily global applies broadly; user-specific overrides via finer labels.
+   - Use `/v1/check` with full labels to auto-resolve the strictest applicable policy.
+
+3. **Integrate into Transaction Flow**:
+   - In your payment service or API gateway (before calling the actual transfer processor):
+     ```go
+     // Using Go client
+     resp, err := c.Check(ctx, client.CheckRequest{
+       Key: "user:" + userID,
+       Labels: map[string]string{
+         "action": "transfer",
+         "risk": riskLevel,  // from your fraud model
+         "kyc": kycStatus,
+       },
+       MaxTokens: 5, // fallback if no policy
+       WindowSeconds: 3600,
+       Cost: 1,
+     })
+     if err != nil || !resp.Allowed {
+       return errors.New("transaction rate limited: " + resp.Algorithm)
+     }
+     // Proceed with transfer
+     ```
+   - For non-Go: HTTP POST to /v1/check or gRPC.
+   - Middleware example: Wrap your /transfer endpoint.
+
+   - Emit replication for state (e.g., update "daily_transfers" counter):
+     ```json
+     POST /v1/replicate
+     {"op": "inc", "key": "user:" + userID + ":daily_transfers", "value": 1, "version": 1}
+     ```
+
+4. **Add Observability and Compliance**:
+   - Use `/dashboard` to monitor hot users (e.g., velocity spikes).
+   - Real-time: SSE on `/v1/visualize/stream?key=user:123&include_history=true`
+   - Pre-change: Simulate with sample transaction costs.
+   - Post-incident: Replay the last 24h of transfer attempts for a user.
+   - Audit: All decisions logged to Redis Streams (query via /v1/replay or external tools).
+
+5. **Deploy for Scale and Multi-Region**:
+   - Use Helm/K8s manifests for high availability.
+   - Enable replication across regions (shared Redis Streams for consistent user counters).
+   - Two-tier ensures edge gateways (e.g., in payment processors) are fast while global limits are enforced.
+   - For fintech compliance: Full event log + snapshots for audits. Namespace keys as "region:us:user:123:transfer".
+
+6. **Test, Iterate, Monitor**:
+   - Start with conservative policies (e.g., 3 tx/hour).
+   - Simulate real traffic patterns (e.g., "what if 100 users spike during market open?").
+   - Monitor via `/metrics` (rejection rates per label) and dashboard.
+   - Tune: Use labels from your risk engine. Add custom cost (e.g., higher for large amounts if you extend the API).
+   - Resilience: If Redis down, local tier continues with short-term limits.
+
+**Fintech-Specific Example End-to-End**:
+1. Deploy as above.
+2. Add the 3 policies (velocity, daily, high-risk).
+3. In transaction API: always call Check with user + risk labels before processing.
+4. Replicate daily counters.
+5. On fraud alert: use dashboard to inspect user key; simulate tightening; replay events for investigation.
+
+This adaptation provides velocity control, tiered access, multi-region consistency, and full auditability while maintaining low latency for high-volume payment flows.
+
+See the main adaptation steps above for shared details (integration code, deployment, etc.). The same `/v1/check` + labels pattern works across all use cases.
 
 This adaptation turns the service into a self-protecting, observable layer. Start simple (in-memory + basic policy), add Redis/replication as you scale.
 
