@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/crypto/rate-limiter-service/limiter"
@@ -23,6 +24,14 @@ import (
 	redis "github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	// google.golang.org/grpc disabled for now (pb descriptor issue)
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 //go:embed ui/*
@@ -31,6 +40,10 @@ var uiFS embed.FS
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+
+	// Basic OpenTelemetry tracing (stdout by default; swap exporter for OTLP/Jaeger in prod).
+	// Controlled by env or always-on for now per plan Phase 1.
+	initTracer()
 
 	var (
 		port     = flag.Int("port", 8080, "port")
@@ -119,12 +132,23 @@ func main() {
 	})
 
 	r.Post("/v1/check", func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := startSpan(r.Context(), "rate_limit.check",
+			attribute.String("key", ""), // filled after decode
+		)
+		defer span.End()
+
 		var req limiter.CheckRequest
 		json.NewDecoder(r.Body).Decode(&req)
 		if req.MaxTokens == 0 { req.MaxTokens=100 }
 		if req.WindowSeconds==0 { req.WindowSeconds=60 }
 		if req.Cost==0 { req.Cost=1 }
 		if req.Algorithm == "" { req.Algorithm = "token_bucket" }
+
+		span.SetAttributes(
+			attribute.String("key", req.Key),
+			attribute.String("algorithm", string(req.Algorithm)),
+			attribute.Int64("cost", int64(req.Cost)),
+		)
 
 		// Phase 3: resolve policy if not fully specified
 		if cfg, ok := policyEngine.Resolve(req.Key, req.Labels); ok {
@@ -139,8 +163,14 @@ func main() {
 			}
 		}
 
-		resp, _ := lim.Check(r.Context(), req)
+		resp, _ := lim.Check(ctx, req)
 		st := 200; if !resp.Allowed { st=429 }
+
+		span.SetAttributes(
+			attribute.Bool("allowed", resp.Allowed),
+			attribute.Int64("remaining", int64(resp.Remaining)),
+			attribute.Int64("limit", int64(resp.Limit)),
+		)
 
 		// Phase 4: log decision
 		lim.LogDecision(r.Context(), limiter.DecisionEvent{
@@ -348,12 +378,15 @@ func main() {
 	// Serve the React framework dashboard (preferred). Falls back to legacy HTML dashboard.
 	slog.Info("registering dashboard route")
 	r.Get("/dashboard", serveDashboard)
+	r.Head("/dashboard", serveDashboard) // explicit HEAD support
 
-	// Serve React build assets + root statics (favicon etc)
-	r.Get("/assets/*", func(w http.ResponseWriter, r *http.Request) {
-		serveReactAsset(w, r)
-	})
-	r.Get("/favicon.svg", func(w http.ResponseWriter, r *http.Request) { serveReactAsset(w, r) })
+	// Static assets for the React SPA (robust + supports HEAD via ServeContent)
+	r.Get("/assets/*", serveDistStaticHandler)
+	r.Head("/assets/*", serveDistStaticHandler)
+	r.Get("/favicon.svg", serveDistStaticHandler)
+	r.Head("/favicon.svg", serveDistStaticHandler)
+	r.Get("/icons.svg", serveDistStaticHandler)
+	r.Head("/icons.svg", serveDistStaticHandler)
 
 	slog.Info("server", "port", *port)
 
@@ -459,12 +492,23 @@ func (t *twoTierLimiter) GetReplicatedState(key string) (interface{}, bool) {
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
 // serveDashboard prefers the built React SPA at frontend/dist. Otherwise serves the legacy single-file dashboard.
+// Supports GET and HEAD.
 func serveDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	distPath := "frontend/dist"
 	if fi, err := os.Stat(distPath); err == nil && fi.IsDir() {
 		indexPath := filepath.Join(distPath, "index.html")
 		if b, err := os.ReadFile(indexPath); err == nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if r.Method == http.MethodHead {
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(b)))
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			w.Write(b)
 			return
 		}
@@ -472,36 +516,55 @@ func serveDashboard(w http.ResponseWriter, r *http.Request) {
 	// fallback to legacy
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if data, err := uiFS.ReadFile("ui/dashboard.html"); err == nil {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		w.Write(data)
 		return
 	}
 	http.Error(w, "dashboard unavailable", 503)
 }
 
-// serveReactAsset serves JS/CSS and other assets from the React build dir.
-func serveReactAsset(w http.ResponseWriter, r *http.Request) {
+// serveDistStaticHandler serves files from frontend/dist for the React SPA.
+// Supports GET + HEAD.
+func serveDistStaticHandler(w http.ResponseWriter, r *http.Request) {
 	distPath := "frontend/dist"
-	assetPath := r.URL.Path // e.g. /assets/index-xxx.js
-	clean := filepath.Clean(assetPath)
-	full := filepath.Join(distPath, clean)
-	// security: ensure inside dist
-	if !isSubPath(distPath, full) {
-		http.Error(w, "forbidden", 403)
+	if _, err := os.Stat(distPath); err != nil {
+		http.NotFound(w, r)
 		return
 	}
+
+	rel := strings.TrimPrefix(r.URL.Path, "/")
+	if rel == "" || rel == "dashboard" {
+		rel = "index.html"
+	}
+	full := filepath.Join(distPath, rel)
+
+	if !isSubPath(distPath, full) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	f, err := os.Open(full)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	defer f.Close()
-	stat, _ := f.Stat()
+
+	stat, err := f.Stat()
+	if err != nil || stat.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
 	http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
 }
 
 func isSubPath(base, target string) bool {
 	rel, err := filepath.Rel(base, target)
-	if err != nil || rel == ".." || len(rel) > 2 && rel[:3] == "../" {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
 		return false
 	}
 	return true
@@ -509,3 +572,30 @@ func isSubPath(base, target string) bool {
 
 // optional helper to copy built assets into embed dir at build time (omitted for simplicity)
 func _ensureDist() fs.FS { return nil }
+
+// initTracer sets up a simple stdout trace exporter (synchronous for demo visibility).
+// Production: use WithBatcher + OTLP exporter, and call Shutdown on exit.
+func initTracer() {
+	exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+	if err != nil {
+		slog.Warn("failed to init stdout trace exporter", "err", err)
+		return
+	}
+
+	tp := trace.NewTracerProvider(
+		trace.WithSyncer(exp), // immediate for development / demo
+		trace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName("rate-limiter-service"),
+		)),
+	)
+	otel.SetTracerProvider(tp)
+
+	slog.Info("OpenTelemetry tracing initialized (stdout syncer)")
+}
+
+// helper to start a span in handlers (uses global tracer)
+func startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, oteltrace.Span) {
+	tr := otel.Tracer("rate-limiter")
+	return tr.Start(ctx, name, oteltrace.WithAttributes(attrs...))
+}
