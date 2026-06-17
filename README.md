@@ -156,7 +156,7 @@ go build
 go test ./...
 ```
 
-See [plan.md](./plan.md) for the full ambitious roadmap (production hardening, live visualization, policy engine, persistent replay, unified replication + conflict resolution, etc.).
+See [UseCase.md](./UseCase.md) for real-world use cases and [plan.md](./plan.md) for roadmap.
 
 ## Phase 7: Ecosystem, SDKs, and Integrations - Implemented
 
