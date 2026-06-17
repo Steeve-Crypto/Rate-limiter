@@ -548,11 +548,21 @@
                 <!-- Persistent Recent Results Log + Charts (right panel) -->
                 <div class="w-80 border-l border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden">
                     <div class="p-4 border-b border-zinc-800">
-                        <div class="font-semibold text-sm flex items-center gap-2">
-                            <i class="fa-solid fa-history"></i>
-                            <span>Recent Results Log</span>
+                        <div class="flex items-center justify-between">
+                            <div class="font-semibold text-sm flex items-center gap-2">
+                                <i class="fa-solid fa-history"></i>
+                                <span>Recent Results Log</span>
+                            </div>
+                            <div class="flex gap-1">
+                                <button onclick="exportLog('json')" class="text-[10px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1">
+                                    <i class="fa-solid fa-download fa-xs"></i> JSON
+                                </button>
+                                <button onclick="exportLog('csv')" class="text-[10px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1">
+                                    <i class="fa-solid fa-download fa-xs"></i> CSV
+                                </button>
+                            </div>
                         </div>
-                        <div class="text-[10px] text-zinc-500">Actions across all tabs</div>
+                        <div class="text-[10px] text-zinc-500">Actions across all tabs • Auto-updates</div>
                     </div>
                     
                     <div class="flex-1 overflow-auto p-3 space-y-2 text-xs" id="results-log">
@@ -631,6 +641,47 @@
             
             // Update charts
             updateCharts(type, details);
+        }
+
+        function exportLog(format) {
+            if (recentResults.length === 0) {
+                alert('No results to export yet.');
+                return;
+            }
+            let content, filename, mime;
+            if (format === 'json') {
+                content = JSON.stringify(recentResults, null, 2);
+                filename = 'rateflow-log.json';
+                mime = 'application/json';
+            } else {
+                // CSV
+                const headers = ['timestamp', 'type', 'message', 'key', 'allowed', 'remaining'];
+                let csv = headers.join(',') + '\n';
+                recentResults.forEach(entry => {
+                    const row = [
+                        entry.timestamp,
+                        entry.type,
+                        `"${entry.message.replace(/"/g, '""')}"`,
+                        entry.details.key || '',
+                        entry.details.allowed !== undefined ? entry.details.allowed : '',
+                        entry.details.remaining !== undefined ? entry.details.remaining : ''
+                    ];
+                    csv += row.join(',') + '\n';
+                });
+                content = csv;
+                filename = 'rateflow-log.csv';
+                mime = 'text/csv';
+            }
+            const blob = new Blob([content], { type: mime });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+            
+            // Log the export action
+            logResult('export', `Exported log as ${format.toUpperCase()}`);
         }
         
         function updateCharts(type, details) {
