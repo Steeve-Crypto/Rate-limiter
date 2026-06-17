@@ -1,0 +1,90 @@
+openapi: 3.0.0
+info:
+  title: Rate Limiter Service API
+  version: 1.0.0
+  description: Real-time rate limiting with policies, visualization, and replication.
+servers:
+  - url: http://localhost:8080
+paths:
+  /v1/check:
+    post:
+      summary: Check rate limit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckRequest'
+      responses:
+        '200':
+          description: Allowed or rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckResponse'
+        '429':
+          description: Rate limited
+  /v1/visualize:
+    get:
+      summary: Get visualization for a key
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Visualization data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Visualization'
+  /v1/simulate:
+    post:
+      summary: Run simulation
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulateRequest'
+      responses:
+        '200':
+          description: Simulation results
+components:
+  schemas:
+    CheckRequest:
+      type: object
+      properties:
+        key: { type: string }
+        max_tokens: { type: integer }
+        window_seconds: { type: integer }
+        algorithm: { type: string }
+        cost: { type: integer }
+        labels: { type: object, additionalProperties: { type: string } }
+    CheckResponse:
+      type: object
+      properties:
+        allowed: { type: boolean }
+        remaining: { type: integer }
+        limit: { type: integer }
+        retry_after_ms: { type: integer }
+        reset_at: { type: integer }
+        algorithm: { type: string }
+    Visualization:
+      type: object
+      properties:
+        algorithm: { type: string }
+        key: { type: string }
+        state: { type: object }
+        diagram: { type: string }
+    SimulateRequest:
+      type: object
+      properties:
+        key: { type: string }
+        max_tokens: { type: integer }
+        window_seconds: { type: integer }
+        algorithm: { type: string }
+        costs:
+          type: array
+          items: { type: integer }

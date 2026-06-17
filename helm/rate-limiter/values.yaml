@@ -1,0 +1,23 @@
+replicaCount: 2
+
+image:
+  repository: rate-limiter
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 8080
+  grpcPort: 8081
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+redis:
+  enabled: true
+  url: "redis:6379"

@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package ratelimiter;
+
+option go_package = "github.com/crypto/rate-limiter-service/limiter/pb";
+
+service RateLimiter {
+  rpc Check(CheckRequest) returns (CheckResponse);
+  rpc Visualize(VisualizeRequest) returns (VisualizeResponse);
+  rpc Simulate(SimulateRequest) returns (SimulateResponse);
+  rpc GetPolicies(Empty) returns (PoliciesResponse);
+  rpc AddPolicy(Policy) returns (PolicyResponse);
+}
+
+message Empty {}
+
+message CheckRequest {
+  string key = 1;
+  uint32 max_tokens = 2;
+  uint32 window_seconds = 3;
+  string algorithm = 4;
+  uint32 cost = 5;
+  map<string, string> labels = 6;
+}
+
+message CheckResponse {
+  bool allowed = 1;
+  uint32 remaining = 2;
+  uint32 limit = 3;
+  int64 retry_after_ms = 4;
+  int64 reset_at = 5;
+  string algorithm = 6;
+}
+
+message VisualizeRequest {
+  string key = 1;
+  string algorithm = 2;
+  uint32 max_tokens = 3;
+  uint32 window_seconds = 4;
+}
+
+message VisualizeResponse {
+  string algorithm = 1;
+  string key = 2;
+  map<string, string> state = 3;  // simplified, real would use struct
+  string diagram = 4;
+}
+
+message SimulateRequest {
+  string key = 1;
+  uint32 max_tokens = 2;
+  uint32 window_seconds = 3;
+  string algorithm = 4;
+  repeated uint32 costs = 5;
+}
+
+message SimulateResponse {
+  repeated SimulateResult results = 1;
+}
+
+message SimulateResult {
+  uint32 cost = 1;
+  bool allowed = 2;
+  uint32 remaining = 3;
+}
+
+message Policy {
+  string name = 1;
+  string pattern = 2;
+  map<string, string> labels = 3;
+  LimitConfig config = 4;
+  int32 priority = 5;
+}
+
+message LimitConfig {
+  string algorithm = 1;
+  uint32 max_tokens = 2;
+  uint32 window_seconds = 3;
+}
+
+message PoliciesResponse {
+  repeated Policy policies = 1;
+}
+
+message PolicyResponse {
+  string status = 1;
+  string name = 2;
+}

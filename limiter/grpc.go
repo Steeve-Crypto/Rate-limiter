@@ -3,28 +3,14 @@ package limiter
 import (
 	"context"
 
-	"google.golang.org/grpc"
+	"github.com/crypto/rate-limiter-service/limiter/pb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// RateLimiterServer is the gRPC server interface (Phase 7).
-type RateLimiterServer interface {
-	Check(ctx context.Context, req *CheckRequest) (*CheckResponse, error)
-	Visualize(ctx context.Context, req *VisualizeReq) (*Visualization, error)
-}
-
-// VisualizeReq for gRPC.
-type VisualizeReq struct {
-	Key           string
-	Algorithm     string
-	MaxTokens     uint32
-	WindowSeconds uint32
-}
-
-// gRPCServer implements the service.
+// gRPCServer implements the generated pb.RateLimiterServer using our Limiter.
 type gRPCServer struct {
-	UnimplementedRateLimiterServer
+	pb.UnimplementedRateLimiterServer
 	lim Limiter
 }
 
@@ -32,20 +18,34 @@ func NewGRPCServer(lim Limiter) *gRPCServer {
 	return &gRPCServer{lim: lim}
 }
 
-// Check implements gRPC Check.
-func (s *gRPCServer) Check(ctx context.Context, req *CheckRequest) (*CheckResponse, error) {
+func (s *gRPCServer) Check(ctx context.Context, req *pb.CheckRequest) (*pb.CheckResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
 	}
-	resp, err := s.lim.Check(ctx, *req)
+	// Convert proto to our internal request
+	internalReq := CheckRequest{
+		Key:           req.Key,
+		MaxTokens:     req.MaxTokens,
+		WindowSeconds: req.WindowSeconds,
+		Algorithm:     Algorithm(req.Algorithm),
+		Cost:          req.Cost,
+		Labels:        req.Labels,
+	}
+	resp, err := s.lim.Check(ctx, internalReq)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "check failed: %v", err)
 	}
-	return resp, nil
+	return &pb.CheckResponse{
+		Allowed:      resp.Allowed,
+		Remaining:    resp.Remaining,
+		Limit:        resp.Limit,
+		RetryAfterMs: 0,
+		ResetAt:      resp.ResetAt,
+		Algorithm:    string(resp.Algorithm),
+	}, nil
 }
 
-// Visualize implements gRPC Visualize (simplified).
-func (s *gRPCServer) Visualize(ctx context.Context, req *VisualizeReq) (*Visualization, error) {
+func (s *gRPCServer) Visualize(ctx context.Context, req *pb.VisualizeRequest) (*pb.VisualizeResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
 	}
@@ -57,25 +57,20 @@ func (s *gRPCServer) Visualize(ctx context.Context, req *VisualizeReq) (*Visuali
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "visualize failed: %v", err)
 	}
-	return viz, nil
+	// Convert state
+	state := map[string]string{}
+	for k, v := range viz.State {
+		if s, ok := v.(string); ok {
+			state[k] = s
+		}
+	}
+	return &pb.VisualizeResponse{
+		Algorithm: viz.Algorithm,
+		Key:       viz.Key,
+		State:     state,
+		Diagram:   viz.Diagram,
+	}, nil
 }
 
-// Unimplemented for forward compat.
-type UnimplementedRateLimiterServer struct{}
-
-func (UnimplementedRateLimiterServer) Check(context.Context, *CheckRequest) (*CheckResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Check not implemented")
-}
-func (UnimplementedRateLimiterServer) Visualize(context.Context, *VisualizeReq) (*Visualization, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Visualize not implemented")
-}
-
-// RegisterRateLimiterServer registers the gRPC service.
-func RegisterRateLimiterServer(s grpc.ServiceRegistrar, srv RateLimiterServer) {
-	// In real use, use generated code. Here we stub for demo.
-	// For actual gRPC, define .proto and generate.
-	// This registers a basic handler.
-	_ = s
-	_ = srv
-	// Placeholder - full impl would use pb.Register
-}
+// Note: Simulate, GetPolicies, AddPolicy can be implemented similarly if needed.
+// For now, stubbed via Unimplemented.

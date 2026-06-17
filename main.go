@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/crypto/rate-limiter-service/limiter"
+	"github.com/crypto/rate-limiter-service/limiter/pb"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	redis "github.com/go-redis/redis/v8"
@@ -330,9 +331,7 @@ setTimeout(load,100)
 			return
 		}
 		grpcServer := grpc.NewServer()
-		// Use our stub service (for full, generate from .proto)
-		// For demo, register a basic handler via reflection + manual if needed
-		// Here we start the server; clients can use the limiter/grpc interface
+		pb.RegisterRateLimiterServer(grpcServer, limiter.NewGRPCServer(lim))
 		reflection.Register(grpcServer)
 		slog.Info("gRPC listening", "addr", grpcAddr)
 		if err := grpcServer.Serve(lis); err != nil {
