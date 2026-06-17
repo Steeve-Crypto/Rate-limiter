@@ -179,3 +179,24 @@ func TestRedisLimiter_WithMiniredis(t *testing.T) {
 		t.Error("expected allowed after reset")
 	}
 }
+
+func TestLeakyBucket(t *testing.T) {
+	l := NewInMemoryLimiter()
+	req := CheckRequest{
+		Key:           "lb-test",
+		MaxTokens:     3,
+		WindowSeconds: 10,
+		Algorithm:     LeakyBucket,
+		Cost:          1,
+	}
+	for i := 0; i < 3; i++ {
+		r, _ := l.Check(context.Background(), req)
+		if !r.Allowed {
+			t.Fatalf("should allow %d", i)
+		}
+	}
+	r, _ := l.Check(context.Background(), req)
+	if r.Allowed {
+		t.Error("should deny 4th immediately")
+	}
+}

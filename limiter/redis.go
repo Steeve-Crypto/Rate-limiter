@@ -41,6 +41,8 @@ func (r *RedisLimiter) Check(ctx context.Context, req CheckRequest) (*CheckRespo
 		resp, err = r.checkTokenBucketLua(ctx, req)
 	case SlidingWindow:
 		resp, err = r.checkSlidingWindowLua(ctx, req)
+	case LeakyBucket:
+		resp, err = r.checkLeakyBucketLua(ctx, req)
 	default:
 		return nil, fmt.Errorf("unknown algorithm: %s", req.Algorithm)
 	}

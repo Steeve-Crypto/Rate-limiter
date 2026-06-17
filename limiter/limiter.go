@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -11,15 +12,17 @@ type Algorithm string
 const (
 	TokenBucket   Algorithm = "token_bucket"
 	SlidingWindow Algorithm = "sliding_window"
+	LeakyBucket   Algorithm = "leaky_bucket"
 )
 
 // CheckRequest is the input for rate limit evaluation + consumption.
 type CheckRequest struct {
-	Key           string    `json:"key"`
-	MaxTokens     uint32    `json:"max_tokens"`
-	WindowSeconds uint32    `json:"window_seconds"`
-	Algorithm     Algorithm `json:"algorithm"`
-	Cost          uint32    `json:"cost"`
+	Key           string            `json:"key"`
+	MaxTokens     uint32            `json:"max_tokens"`
+	WindowSeconds uint32            `json:"window_seconds"`
+	Algorithm     Algorithm         `json:"algorithm"`
+	Cost          uint32            `json:"cost"`
+	Labels        map[string]string `json:"labels,omitempty"`
 }
 
 // CheckResponse is returned by Check.
@@ -66,4 +69,108 @@ func nowUnix() int64 {
 // nowUnixMilli returns current unix milliseconds.
 func nowUnixMilli() int64 {
 	return time.Now().UnixMilli()
+}
+
+// LimitConfig holds resolved rate limit parameters from policy.
+type LimitConfig struct {
+	Algorithm     Algorithm `json:"algorithm"`
+	MaxTokens     uint32    `json:"max_tokens"`
+	WindowSeconds uint32    `json:"window_seconds"`
+	Burst         uint32    `json:"burst,omitempty"` // for leaky bucket etc.
+}
+
+// Policy defines a matching rule and its limit config.
+type Policy struct {
+	Name    string            `json:"name"`
+	Pattern string            `json:"pattern"` // e.g. "user:*" or exact "ip:1.2.3.4"
+	Labels  map[string]string `json:"labels,omitempty"`
+	Config  LimitConfig       `json:"config"`
+	Priority int              `json:"priority,omitempty"`
+}
+
+// PolicyEngine resolves policies for keys + labels.
+type PolicyEngine interface {
+	Resolve(key string, labels map[string]string) (LimitConfig, bool)
+	AddPolicy(p Policy)
+	RemovePolicy(name string)
+	ListPolicies() []Policy
+}
+
+// DefaultPolicyEngine simple in-memory implementation with prefix matching.
+type DefaultPolicyEngine struct {
+	policies []Policy // sorted by priority desc
+}
+
+func NewPolicyEngine() *DefaultPolicyEngine {
+	return &DefaultPolicyEngine{}
+}
+
+func (e *DefaultPolicyEngine) Resolve(key string, labels map[string]string) (LimitConfig, bool) {
+	var best *Policy
+	for i := range e.policies {
+		p := &e.policies[i]
+		if matchesPolicy(key, labels, p) {
+			if best == nil || p.Priority > best.Priority {
+				best = p
+			}
+		}
+	}
+	if best != nil {
+		return best.Config, true
+	}
+	return LimitConfig{}, false
+}
+
+func (e *DefaultPolicyEngine) AddPolicy(p Policy) {
+	e.policies = append(e.policies, p)
+	// simple sort by priority desc
+	for i := 0; i < len(e.policies); i++ {
+		for j := i + 1; j < len(e.policies); j++ {
+			if e.policies[j].Priority > e.policies[i].Priority {
+				e.policies[i], e.policies[j] = e.policies[j], e.policies[i]
+			}
+		}
+	}
+}
+
+func (e *DefaultPolicyEngine) RemovePolicy(name string) {
+	for i := range e.policies {
+		if e.policies[i].Name == name {
+			e.policies = append(e.policies[:i], e.policies[i+1:]...)
+			return
+		}
+	}
+}
+
+func (e *DefaultPolicyEngine) ListPolicies() []Policy {
+	return append([]Policy{}, e.policies...)
+}
+
+func matchesPolicy(key string, labels map[string]string, p *Policy) bool {
+	// simple prefix/wildcard
+	if p.Pattern != "" {
+		if p.Pattern == key || (strings.HasSuffix(p.Pattern, "*") && strings.HasPrefix(key, strings.TrimSuffix(p.Pattern, "*"))) {
+			// labels must match if specified
+			if len(p.Labels) > 0 {
+				for k, v := range p.Labels {
+					if labels[k] != v {
+						return false
+					}
+				}
+			}
+			return true
+		}
+	}
+	// exact label match fallback if no pattern
+	if len(p.Labels) > 0 {
+		match := true
+		for k, v := range p.Labels {
+			if labels[k] != v {
+				match = false
+				break
+			}
+		}
+		return match
+	}
+	return false
 }

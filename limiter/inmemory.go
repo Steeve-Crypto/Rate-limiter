@@ -21,6 +21,9 @@ type InMemoryLimiter struct {
 	// We keep them sorted for easy window trimming.
 	sw map[string][]int64
 
+	// leaky bucket state (Phase 3)
+	lb map[string]*lbState
+
 	// history: lightweight recent visualizations per key (Phase 2)
 	// bounded ring to avoid unbounded growth
 	history     map[string][]*Visualization
@@ -36,6 +39,7 @@ func NewInMemoryLimiter() *InMemoryLimiter {
 	return &InMemoryLimiter{
 		tb:          make(map[string]*tbState),
 		sw:          make(map[string][]int64),
+		lb:          make(map[string]*lbState),
 		history:     make(map[string][]*Visualization),
 		historySize: 50, // keep last N visualizations
 	}
@@ -62,6 +66,8 @@ func (m *InMemoryLimiter) Check(ctx context.Context, req CheckRequest) (*CheckRe
 		resp = m.checkTokenBucket(req)
 	case SlidingWindow:
 		resp = m.checkSlidingWindow(req)
+	case LeakyBucket:
+		resp = m.checkLeakyBucket(req)
 	default:
 		return nil, fmt.Errorf("unknown algorithm: %s", req.Algorithm)
 	}

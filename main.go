@@ -40,6 +40,19 @@ func main() {
 		slog.Info("using inmemory")
 	}
 
+	policyEngine := limiter.NewPolicyEngine()
+	// seed a default example policy
+	policyEngine.AddPolicy(limiter.Policy{
+		Name:    "default",
+		Pattern: "*",
+		Config: limiter.LimitConfig{
+			Algorithm:     limiter.TokenBucket,
+			MaxTokens:     100,
+			WindowSeconds: 60,
+		},
+		Priority: 0,
+	})
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.Recoverer)
 
@@ -53,6 +66,20 @@ func main() {
 		if req.MaxTokens == 0 { req.MaxTokens=100 }
 		if req.WindowSeconds==0 { req.WindowSeconds=60 }
 		if req.Cost==0 { req.Cost=1 }
+
+		// Phase 3: resolve policy if not fully specified
+		if cfg, ok := policyEngine.Resolve(req.Key, req.Labels); ok {
+			if req.Algorithm == "" {
+				req.Algorithm = cfg.Algorithm
+			}
+			if req.MaxTokens == 100 { // default, override
+				req.MaxTokens = cfg.MaxTokens
+			}
+			if req.WindowSeconds == 60 {
+				req.WindowSeconds = cfg.WindowSeconds
+			}
+		}
+
 		resp, _ := lim.Check(r.Context(), req)
 		st := 200; if !resp.Allowed { st=429 }
 		writeJSON(w, st, resp)
@@ -113,6 +140,20 @@ func main() {
 			res = append(res, map[string]any{"cost":c, "allowed":resp.Allowed, "remaining":resp.Remaining})
 		}
 		writeJSON(w, 200, map[string]any{"results":res})
+	})
+
+	// Phase 3 Policy API
+	r.Get("/v1/policies", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, policyEngine.ListPolicies())
+	})
+	r.Post("/v1/policies", func(w http.ResponseWriter, r *http.Request) {
+		var p limiter.Policy
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "invalid policy"})
+			return
+		}
+		policyEngine.AddPolicy(p)
+		writeJSON(w, 200, map[string]string{"status": "added", "name": p.Name})
 	})
 
 	r.Get("/v1/admin/inspect", func(w http.ResponseWriter, r *http.Request) {

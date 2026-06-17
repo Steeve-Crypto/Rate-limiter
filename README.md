@@ -158,6 +158,20 @@ go test ./...
 
 See [plan.md](./plan.md) for the full ambitious roadmap (production hardening, live visualization, policy engine, persistent replay, unified replication + conflict resolution, etc.).
 
+## Phase 3 (Advanced Rate Limiting & Policy Engine) - Implemented
+- New `leaky_bucket` algorithm
+- `PolicyEngine` + `Policy` with pattern + label matching (hierarchical / multi-dimensional)
+- Labels support in `CheckRequest`
+- Dynamic policy management via `GET/POST /v1/policies`
+- Policy resolution integrated into `/v1/check` (overrides defaults)
+- Example: VIP label can use different algo/limits than default
+
+Usage:
+```bash
+curl -X POST /v1/check -d '{"key":"u","labels":{"tier":"vip"},"cost":1}'
+curl -X POST /v1/policies -d '{"name":"vip","pattern":"*","labels":{"tier":"vip"},"config":{"algorithm":"leaky_bucket","max_tokens":5,"window_seconds":5},"priority":100}'
+```
+
 ## Phase 1 (Production Foundation) - Implemented
 - Prometheus metrics at `/metrics` (checks, latency histograms by algorithm/backend)
 - Admin API: `POST /v1/admin/reset?key=...`, `GET /v1/admin/inspect?key=...`
