@@ -349,10 +349,11 @@ func main() {
 	slog.Info("registering dashboard route")
 	r.Get("/dashboard", serveDashboard)
 
-	// Serve React build assets (Vite outputs /assets/* in index.html)
+	// Serve React build assets + root statics (favicon etc)
 	r.Get("/assets/*", func(w http.ResponseWriter, r *http.Request) {
 		serveReactAsset(w, r)
 	})
+	r.Get("/favicon.svg", func(w http.ResponseWriter, r *http.Request) { serveReactAsset(w, r) })
 
 	slog.Info("server", "port", *port)
 
