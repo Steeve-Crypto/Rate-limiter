@@ -29,10 +29,14 @@ func main() {
 	flag.Parse()
 
 	var lim limiter.Limiter
+	var nodeID = "node-" + fmt.Sprintf("%d", time.Now().UnixNano()%10000)
+	var replicator *limiter.Replicator
 	if *redisURL != "" {
 		rdb := redis.NewClient(&redis.Options{Addr: *redisURL})
 		if rdb.Ping(context.Background()).Err() == nil {
 			lim = limiter.NewRedisLimiter(rdb)
+			replicator = limiter.NewReplicator(nodeID, rdb, "rl:replication")
+			replicator.StartConsumer(context.Background())
 		}
 	}
 	if lim == nil {
@@ -93,6 +97,16 @@ func main() {
 			Limit:     resp.Limit,
 			Cost:      req.Cost,
 			Labels:    req.Labels,
+		})
+
+		// Phase 5: also emit as replication event for rate state replication
+		lim.EmitReplicationEvent(r.Context(), limiter.ReplicationEvent{
+			Op:      "rate_decision",
+			Key:     req.Key,
+			Value:   map[string]any{"allowed": resp.Allowed, "remaining": resp.Remaining},
+			Ts:      time.Now().UnixMilli(),
+			Node:    "default",
+			Version: 1,
 		})
 
 		writeJSON(w, st, resp)
@@ -167,6 +181,26 @@ func main() {
 		}
 		policyEngine.AddPolicy(p)
 		writeJSON(w, 200, map[string]string{"status": "added", "name": p.Name})
+	})
+
+	// Phase 5: Replication endpoints (unified with event log)
+	r.Post("/v1/replicate", func(w http.ResponseWriter, r *http.Request) {
+		var ev limiter.ReplicationEvent
+		json.NewDecoder(r.Body).Decode(&ev)
+		if ev.Node == "" {
+			ev.Node = nodeID
+		}
+		if replicator != nil {
+			replicator.Emit(r.Context(), ev.Op, ev.Key, ev.Value, ev.Version)
+		} else {
+			lim.EmitReplicationEvent(r.Context(), ev)
+		}
+		writeJSON(w, 200, map[string]string{"status": "emitted", "key": ev.Key})
+	})
+	r.Get("/v1/replicated/{key}", func(w http.ResponseWriter, r *http.Request) {
+		key := chi.URLParam(r, "key")
+		val, ok := lim.GetReplicatedState(key)
+		writeJSON(w, 200, map[string]any{"key": key, "value": val, "found": ok})
 	})
 
 	// Phase 4: Replay endpoint

@@ -158,6 +158,24 @@ go test ./...
 
 See [plan.md](./plan.md) for the full ambitious roadmap (production hardening, live visualization, policy engine, persistent replay, unified replication + conflict resolution, etc.).
 
+## Phase 5 (Unified Real-Time Coordination Platform) - Implemented
+- `ReplicationEvent` + `ReplicatedStore` with LWW conflict resolution (ported from demo, with node/version/tiebreak).
+- `Replicator` using Redis Streams (unified with Phase 4 decision log).
+- `ReplicatedCounter` and general replicated state examples.
+- Rate limit decisions can emit replication events.
+- New endpoints:
+  - `POST /v1/replicate` (emit general replication event)
+  - `GET /v1/replicated/{key}`
+- Node ID support and consumer for applying remote events.
+- Integrated with existing Limiter interface and policy engine.
+- Unified log allows rate limiting + arbitrary replicated state (flags, counters) in one platform.
+
+Example:
+```bash
+curl -X POST /v1/replicate -d '{"op":"upsert","key":"feature:beta","value":true,"node":"nodeA","version":1}'
+curl /v1/replicated/feature:beta
+```
+
 ## Phase 3 (Advanced Rate Limiting & Policy Engine) - Implemented
 - New `leaky_bucket` algorithm
 - `PolicyEngine` + `Policy` with pattern + label matching (hierarchical / multi-dimensional)

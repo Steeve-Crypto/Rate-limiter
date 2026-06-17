@@ -65,6 +65,11 @@ type Limiter interface {
 	Restore(ctx context.Context, src string) error
 	LogDecision(ctx context.Context, ev DecisionEvent) error
 	Replay(ctx context.Context, fromTs, toTs int64) ([]DecisionEvent, error)
+
+	// Phase 5: Replication support
+	EmitReplicationEvent(ctx context.Context, ev ReplicationEvent) error
+	ApplyReplicationEvent(ev ReplicationEvent) bool
+	GetReplicatedState(key string) (interface{}, bool)
 }
 
 // nowUnix returns current unix seconds.

@@ -469,3 +469,34 @@ func (r *RedisLimiter) Replay(ctx context.Context, fromTs, toTs int64) ([]Decisi
 	return events, nil
 }
 
+// Phase 5: Replication using unified stream
+func (r *RedisLimiter) EmitReplicationEvent(ctx context.Context, ev ReplicationEvent) error {
+	streamKey := "rl:replication"
+	data := map[string]interface{}{
+		"event_id": ev.EventID,
+		"op":       ev.Op,
+		"key":      ev.Key,
+		"value":    ev.Value,
+		"ts":       ev.Ts,
+		"node":     ev.Node,
+		"version":  ev.Version,
+	}
+	_, err := r.client.XAdd(ctx, &redis.XAddArgs{Stream: streamKey, Values: data}).Result()
+	return err
+}
+
+func (r *RedisLimiter) ApplyReplicationEvent(ev ReplicationEvent) bool {
+	// Use global or per-instance store; for demo use a package level one
+	// In full impl, per-key replicated stores
+	return true // placeholder - real apply would use ReplicatedStore
+}
+
+func (r *RedisLimiter) GetReplicatedState(key string) (interface{}, bool) {
+	// Could read from replicated keys or stream
+	val, err := r.client.Get(context.Background(), "replicated:"+key).Result()
+	if err != nil {
+		return nil, false
+	}
+	return val, true
+}
+

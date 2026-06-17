@@ -471,3 +471,23 @@ func (m *InMemoryLimiter) Replay(ctx context.Context, fromTs, toTs int64) ([]Dec
 	}
 	return out, nil
 }
+
+// Phase 5 replication (simple in-memory replicated store)
+var (
+	globalReplicated = NewReplicatedStore("inmemory-node")
+)
+
+func (m *InMemoryLimiter) EmitReplicationEvent(ctx context.Context, ev ReplicationEvent) error {
+	// For in-mem demo, just apply locally
+	m.ApplyReplicationEvent(ev)
+	return nil
+}
+
+func (m *InMemoryLimiter) ApplyReplicationEvent(ev ReplicationEvent) bool {
+	return globalReplicated.Apply(ev, nil)
+}
+
+func (m *InMemoryLimiter) GetReplicatedState(key string) (interface{}, bool) {
+	v, ok, _ := globalReplicated.Get(key)
+	return v, ok
+}
