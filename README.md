@@ -15,6 +15,30 @@ Designed for real traffic: in-memory mode targets >50k requests/sec per core wit
 - **Control Center**: React + Tailwind + Recharts dashboard with live SSE, policy management, cluster view, JSON/CSV export
 - **Production extras**: Policy engine with labels, two-tier limiting, replication, admin API, Kubernetes-friendly
 
+
+## Demo / Control center
+
+Live screenshots from a local in-memory run (`./rate-limiter -port 8080`):
+
+![RateFlow Control Center](docs/demo/dashboard.png)
+
+![Token-bucket visualize](docs/demo/visualize.png)
+
+![POST /v1/check response](docs/demo/api-check.png)
+
+**Run the dashboard locally**
+
+```bash
+go build -o rate-limiter .
+./rate-limiter -port 8080
+# open http://localhost:8080/dashboard
+curl -X POST http://localhost:8080/v1/check \
+  -H 'Content-Type: application/json' \
+  -d '{"key": "user:42:api", "max_tokens": 100, "window_seconds": 60, "algorithm": "token_bucket", "cost": 1}'
+# optional HTML snapshot
+# http://localhost:8080/v1/visualize?key=user:42:api&algorithm=token_bucket&max_tokens=100&window_seconds=60&format=html
+```
+
 ## Quick start
 
 ```bash
